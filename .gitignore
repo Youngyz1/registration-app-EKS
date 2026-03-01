@@ -34,3 +34,7 @@ Thumbs.db
 *.tfstate
 *.tfstate.backup
 terraform.tfvars
+venv/
+node_modules/
+frontend/build/
+backend/__pycache__/

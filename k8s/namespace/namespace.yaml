@@ -1,0 +1,7 @@
+﻿apiVersion: v1
+kind: Namespace
+metadata:
+  name: registration-app
+  labels:
+    app: registration-app
+    environment: production
