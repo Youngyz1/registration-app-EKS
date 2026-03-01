@@ -406,7 +406,7 @@ cd ~/registration-app/terraform
 terraform output app_url
 
 Connect to EC2
-hssh -i ~/.ssh/jenkins.pem ec2-user@ec2-ip
+ssh -i ~/.ssh/jenkins.pem ec2-user@54.221.166.98
 
 Check containers are running
 sudo docker ps
