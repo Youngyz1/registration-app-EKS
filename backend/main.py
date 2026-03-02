@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -26,17 +26,20 @@ app = FastAPI(title="Backend API")
 # API router
 api_router = APIRouter(prefix="/api")
 
-# CORS middleware
+# ✅ Fix 1 - Restrict CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(","),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# Security config
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key")
+# ✅ Fix 2 - Fail if SECRET_KEY not set
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY environment variable is not set!")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -62,7 +65,7 @@ class User(BaseModel):
     created_at: Optional[datetime] = None
 
     class Config:
-        from_attributes = True  # for Pydantic v2
+        from_attributes = True
 
 class Token(BaseModel):
     access_token: str
@@ -82,7 +85,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
+    # ✅ Fix 3 - timezone aware datetime
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -108,13 +112,12 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         email=user.email,
         hashed_password=hashed_password,
         is_active=True,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(timezone.utc)
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-
     return new_user
 
 @api_router.post("/token", response_model=Token)
@@ -141,7 +144,10 @@ def login_for_access_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 @api_router.get("/users/me", response_model=User)
-def read_users_me(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def read_users_me(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
@@ -155,8 +161,20 @@ def read_users_me(token: str = Depends(oauth2_scheme), db: Session = Depends(get
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
+# ✅ Fix 4 - Protect /users endpoint
 @api_router.get("/users")
-def get_all_users(db: Session = Depends(get_db)):
+def get_all_users(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
     users = db.query(models.User).all()
     return [
         {
@@ -167,7 +185,7 @@ def get_all_users(db: Session = Depends(get_db)):
         } for u in users
     ]
 
-# ✅ Healthcheck for Docker
+# Healthcheck
 @api_router.get("/health")
 def health_check():
     return {"status": "healthy"}
