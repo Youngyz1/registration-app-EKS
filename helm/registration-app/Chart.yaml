@@ -1,0 +1,6 @@
+﻿apiVersion: v2
+name: registration-app
+description: Full-stack registration app - FastAPI + PostgreSQL + React
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

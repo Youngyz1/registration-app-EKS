@@ -1,0 +1,55 @@
+﻿# Global
+namespace: registration-app
+
+# Backend
+backend:
+  image: youngyz1/registration-backend
+  tag: latest
+  replicas: 2
+  port: 8000
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "500m"
+
+# Frontend
+frontend:
+  image: youngyz1/registration-frontend
+  tag: latest
+  replicas: 2
+  port: 80
+  nodePort: 30080
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+
+# PostgreSQL
+postgres:
+  image: postgres
+  tag: "15"
+  replicas: 1
+  port: 5432
+  storage: 5Gi
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "500m"
+
+# Secrets
+secrets:
+  dbUser: "dbadmin"
+  dbPassword: "changeme-strong-password"
+  dbName: "appdb"
+  dbHost: "postgres-service"
+  dbPort: "5432"
+  jwtSecretKey: "changeme-jwt-secret-key"
