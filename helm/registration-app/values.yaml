@@ -1,11 +1,11 @@
-﻿# Global
+# Global
 namespace: registration-app
 
 # Backend
 backend:
   image: youngyz1/registration-backend
   tag: latest
-  replicas: 2
+  replicas: 3
   port: 8000
   resources:
     requests:
@@ -19,7 +19,7 @@ backend:
 frontend:
   image: youngyz1/registration-frontend
   tag: latest
-  replicas: 2
+  replicas: 3
   port: 80
   nodePort: 30080
   resources:
