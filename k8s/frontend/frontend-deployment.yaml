@@ -21,7 +21,7 @@ spec:
         fsGroup: 2000
       containers:
         - name: frontend
-          image: youngyz1/registration-frontend:94f7dfe095e05a232dfc1ec943f923d54f63692c
+          image: youngyz1/registration-frontend:dcc5fbc83848495427814913871a25f21f178958
           ports:
             - containerPort: 80
           readinessProbe:
