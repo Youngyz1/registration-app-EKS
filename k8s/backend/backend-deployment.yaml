@@ -15,6 +15,10 @@ spec:
       labels:
         app: backend
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
       containers:
         - name: backend
           image: youngyz1/registration-backend:latest
