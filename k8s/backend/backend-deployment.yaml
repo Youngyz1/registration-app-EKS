@@ -28,7 +28,7 @@ spec:
       
       containers:
         - name: backend
-          image: youngyz1/registration-backend:0849c13a721b2fd87457b62808477373c090169c
+          image: youngyz1/registration-backend:1d756a96b849a9857f74b7a5984620518dc7434e
           ports:
             - containerPort: 8000
           env:
