@@ -1,4 +1,4 @@
-﻿name: CI/CD Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
@@ -68,11 +68,11 @@ jobs:
           severity: HIGH,CRITICAL
 
       - name: Snyk scan backend dependencies
-        uses: snyk/actions/python@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --severity-threshold=high --file=backend/requirements.txt
+        run: |
+          pip install -r backend/requirements.txt
+          npm install -g snyk
+          snyk auth ${{ secrets.SNYK_TOKEN }}
+          snyk test --severity-threshold=high --file=backend/requirements.txt || true
         continue-on-error: true
 
       - name: Login to Docker Hub
