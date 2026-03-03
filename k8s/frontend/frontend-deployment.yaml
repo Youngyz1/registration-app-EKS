@@ -16,26 +16,40 @@ spec:
         app: frontend
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 2000
+        runAsNonRoot: false
+        runAsUser: 0
+        fsGroup: 101  # CHANGED: nginx group
       containers:
         - name: frontend
           image: youngyz1/registration-frontend:dcc5fbc83848495427814913871a25f21f178958
           ports:
             - containerPort: 80
+          
+          # ADDED: Volume mounts for writable directories
+          volumeMounts:
+          - name: nginx-cache
+            mountPath: /var/cache/nginx
+          - name: nginx-run
+            mountPath: /var/run
+          - name: nginx-log
+            mountPath: /var/log/nginx
+          
           readinessProbe:
             httpGet:
               path: /
               port: 80
             initialDelaySeconds: 10
             periodSeconds: 5
+            failureThreshold: 3
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /
               port: 80
             initialDelaySeconds: 20
             periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
           resources:
             requests:
               memory: "64Mi"
@@ -43,3 +57,12 @@ spec:
             limits:
               memory: "128Mi"
               cpu: "200m"
+      
+      # ADDED: Volumes for temporary directories
+      volumes:
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+      - name: nginx-log
+        emptyDir: {}

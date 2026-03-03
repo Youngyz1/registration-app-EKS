@@ -19,6 +19,13 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 2000
+      
+      # ADDED: Init container to wait for PostgreSQL
+      initContainers:
+      - name: wait-for-db
+        image: busybox:1.35
+        command: ['sh', '-c', "until nc -z postgres-service 5432; do echo 'Waiting for PostgreSQL...'; sleep 2; done; echo 'PostgreSQL is ready!'"]
+      
       containers:
         - name: backend
           image: youngyz1/registration-backend:dcc5fbc83848495427814913871a25f21f178958
@@ -66,12 +73,16 @@ spec:
               port: 8000
             initialDelaySeconds: 15
             periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /api/health
               port: 8000
             initialDelaySeconds: 30
             periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
           resources:
             requests:
               memory: "128Mi"
