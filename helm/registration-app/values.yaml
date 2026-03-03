@@ -1,27 +1,27 @@
-# Global
+# Default values for registration-app Helm chart (Production)
+# This is a YAML-formatted file for Helm
+
+# Global Namespace
 namespace: registration-app
 
-# Backend
-backend:
-  image: youngyz1/registration-backend
-  tag: latest
-  replicas: 3
-  port: 8000
-  resources:
-    requests:
-      memory: "128Mi"
-      cpu: "100m"
-    limits:
-      memory: "256Mi"
-      cpu: "500m"
-
-# Frontend
+# ============================================
+# FRONTEND CONFIGURATION
+# ============================================
 frontend:
-  image: youngyz1/registration-frontend
-  tag: latest
-  replicas: 3
-  port: 80
-  nodePort: 30080
+  enabled: true
+  replicaCount: 3
+  
+  image:
+    repository: youngyz1/registration-frontend
+    pullPolicy: IfNotPresent
+    tag: "latest"  # Will be overridden by CI/CD with actual image tag
+  
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 80
+    nodePort: 30080  # For debugging only, Ingress is primary
+  
   resources:
     requests:
       memory: "64Mi"
@@ -29,27 +29,228 @@ frontend:
     limits:
       memory: "128Mi"
       cpu: "200m"
+  
+  env:
+    LOG_LEVEL: "INFO"
 
-# PostgreSQL
-postgres:
-  image: postgres
-  tag: "15"
-  replicas: 1
-  port: 5432
-  storage: 5Gi
+# ============================================
+# BACKEND CONFIGURATION
+# ============================================
+backend:
+  enabled: true
+  replicaCount: 3
+  
+  image:
+    repository: youngyz1/registration-backend
+    pullPolicy: IfNotPresent
+    tag: "latest"  # Will be overridden by CI/CD with actual image tag
+  
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+  
   resources:
     requests:
-      memory: "128Mi"
+      memory: "256Mi"
       cpu: "100m"
     limits:
-      memory: "256Mi"
+      memory: "512Mi"
       cpu: "500m"
+  
+  env:
+    LOG_LEVEL: "INFO"
+    ENVIRONMENT: "production"
+    DATABASE_POOL_SIZE: "20"
+  
+  # Database connection
+  database:
+    host: "registration-app-eks-db.cmd6quusggmv.us-east-1.rds.amazonaws.com"
+    port: 5432
+    name: "registrationdb"
 
-# Secrets
+# ============================================
+# POSTGRESQL CONFIGURATION
+# ============================================
+postgres:
+  enabled: false
+  
+  image:
+    repository: postgres
+    tag: "15"
+  
+  service:
+    type: ClusterIP
+    port: 5432
+    targetPort: 5432
+  
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+  
+  # Persistent Volume
+  persistence:
+    enabled: true
+    storageClass: "gp2"  # AWS EBS storage class
+    size: "20Gi"
+    path: /var/lib/postgresql/data
+  
+  # Initial database
+  initdb:
+    database: "registrationdb"
+    user: "dbadmin"
+    password: "changeme-strong-password"
+
+# ============================================
+# AUTOSCALING (Horizontal Pod Autoscaler)
+# ============================================
+autoscaling:
+  backend:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+  
+  frontend:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 80
+
+# ============================================
+# POD DISRUPTION BUDGET (High Availability)
+# ============================================
+podDisruptionBudget:
+  backend:
+    enabled: true
+    minAvailable: 2
+  frontend:
+    enabled: true
+    minAvailable: 1
+
+# ============================================
+# NETWORK POLICIES (Security)
+# ============================================
+networkPolicy:
+  enabled: true
+
+# ============================================
+# INGRESS (ALB - Application Load Balancer)
+# ============================================
+ingress:
+  enabled: true
+  className: "alb"  # AWS ALB Ingress Controller
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    # Uncomment and add your certificate ARN:
+    # alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/CERT_ID"
+  hosts:
+    - host: "registration-app.example.com"
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ============================================
+# MONITORING & OBSERVABILITY
+# ============================================
+monitoring:
+  prometheus:
+    enabled: true
+    scrapeInterval: 30s
+    port: 8000
+  
+  loki:
+    enabled: true
+    logLevel: "info"
+
+# ============================================
+# SECRETS (from AWS Secrets Manager or K8s Secrets)
+# ============================================
 secrets:
+  # Kubernetes secrets (basic auth)
+  create: true
   dbUser: "dbadmin"
   dbPassword: "changeme-strong-password"
-  dbName: "appdb"
-  dbHost: "postgres-service"
+  dbName: "registrationdb"
+  dbHost: "registration-app-eks-db.cmd6quusggmv.us-east-1.rds.amazonaws.com"
   dbPort: "5432"
   jwtSecretKey: "changeme-jwt-secret-key"
+  
+  # External Secrets Operator (for AWS Secrets Manager)
+  externalSecrets:
+    enabled: false  # Set to true to use AWS Secrets Manager
+    refreshInterval: "1h"
+    backendType: "awsSecretsManager"
+    awsRegion: "us-east-1"
+    secretName: "registration-app-secrets"
+
+# ============================================
+# CONFIGURATION
+# ============================================
+configMap:
+  create: true
+  data:
+    API_TIMEOUT: "30"
+    MAX_CONNECTIONS: "100"
+    CACHE_TTL: "3600"
+
+# ============================================
+# SECURITY CONTEXT
+# ============================================
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# ============================================
+# SERVICE ACCOUNT (for IRSA - IAM Roles for Service Accounts)
+# ============================================
+serviceAccount:
+  create: true
+  annotations: {}
+    # Uncomment and add your IRSA role ARN:
+    # eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/registration-app-sa-role"
+  name: "registration-app-sa"
+
+# ============================================
+# ISTIO SERVICE MESH
+# ============================================
+istio:
+  enabled: true
+  mtls:
+    enabled: true
+    mode: STRICT  # Require mTLS for all traffic
+  virtualServices:
+    enabled: true
+  destinationRules:
+    enabled: true
+  authorizationPolicies:
+    enabled: true
+
+# ============================================
+# RESOURCE QUOTAS
+# ============================================
+resourceQuota:
+  enabled: true
+  requests:
+    memory: "2Gi"
+    cpu: "2"
+  limits:
+    memory: "4Gi"
+    cpu: "4"
+
+
+

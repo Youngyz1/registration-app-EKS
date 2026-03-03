@@ -1,0 +1,123 @@
+---
+{{- if .Values.istio.enabled }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: backend
+  namespace: {{ .Values.namespace }}
+spec:
+  hosts:
+  - backend
+  - backend.{{ .Values.namespace }}
+  - backend.{{ .Values.namespace }}.svc
+  - backend.{{ .Values.namespace }}.svc.cluster.local
+  http:
+  - route:
+    - destination:
+        host: backend
+      weight: 100
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: backend
+  namespace: {{ .Values.namespace }}
+spec:
+  host: backend
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 100
+    loadBalancer:
+      simple: LEAST_REQUEST
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: frontend
+  namespace: {{ .Values.namespace }}
+spec:
+  hosts:
+  - frontend
+  - frontend.{{ .Values.namespace }}
+  - frontend.{{ .Values.namespace }}.svc
+  - frontend.{{ .Values.namespace }}.svc.cluster.local
+  http:
+  - route:
+    - destination:
+        host: frontend
+      weight: 100
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: frontend
+  namespace: {{ .Values.namespace }}
+spec:
+  host: frontend
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 100
+    loadBalancer:
+      simple: ROUND_ROBIN
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  mtls:
+    mode: STRICT
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: backend-policy
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/{{ .Values.namespace }}/sa/{{ .Values.serviceAccount.name }}
+    to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        ports: ["8000"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: frontend-policy
+  namespace: {{ .Values.namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  rules:
+  - from:
+    - source:
+        principals: ["*"]
+    to:
+    - operation:
+        methods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE"]
+        ports: ["80"]
+{{- end }}

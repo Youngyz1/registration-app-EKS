@@ -56,3 +56,14 @@ resource "aws_db_instance" "main" {
     Name = "${var.cluster_name}-db"
   }
 }
+
+# Allow EKS nodes to connect to RDS
+resource "aws_security_group_rule" "eks_to_rds" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  source_security_group_id = aws_eks_node_group.main.resources[0].remote_access_security_group_id
+  security_group_id        = aws_security_group.rds.id
+  description              = "Allow EKS nodes to connect to RDS PostgreSQL"
+}

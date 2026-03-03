@@ -1,4 +1,4 @@
-﻿apiVersion: apps/v1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
@@ -6,67 +6,98 @@ metadata:
   labels:
     app: backend
 spec:
-  replicas: {{ .Values.backend.replicas }}
+  replicas: {{ .Values.backend.replicaCount }}
   selector:
     matchLabels:
       app: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
         app: backend
     spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.35
+        command:
+          - sh
+          - -c
+          - |
+            echo "Waiting for PostgreSQL..."
+            until nc -z {{ .Values.backend.database.host }} {{ .Values.backend.database.port }}; do
+              echo "PostgreSQL not ready, waiting..."
+              sleep 2
+            done
+            echo "PostgreSQL is ready!"
       containers:
-        - name: backend
-          image: {{ .Values.backend.image }}:{{ .Values.backend.tag }}
-          ports:
-            - containerPort: {{ .Values.backend.port }}
-          env:
-            - name: DB_USER
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: DB_USER
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: DB_PASSWORD
-            - name: DB_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: DB_HOST
-            - name: DB_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: DB_PORT
-            - name: DB_NAME
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: DB_NAME
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: DATABASE_URL
-            - name: JWT_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: JWT_SECRET_KEY
-          readinessProbe:
-            httpGet:
-              path: /api/health
-              port: {{ .Values.backend.port }}
-            initialDelaySeconds: 15
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /api/health
-              port: {{ .Values.backend.port }}
-            initialDelaySeconds: 30
-            periodSeconds: 20
-          resources:
-            {{- toYaml .Values.backend.resources | nindent 12 }}
+      - name: backend
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.backend.service.targetPort }}
+          protocol: TCP
+        env:
+        {{- range $key, $value := .Values.backend.env }}
+        - name: {{ $key }}
+          value: "{{ $value }}"
+        {{- end }}
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: registration-app-secrets
+              key: dbUser
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: registration-app-secrets
+              key: dbPassword
+        - name: DB_HOST
+          value: "{{ .Values.backend.database.host }}"
+        - name: DB_PORT
+          value: "{{ .Values.backend.database.port }}"
+        - name: DB_NAME
+          value: "{{ .Values.backend.database.name }}"
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: registration-app-secrets
+              key: jwtSecretKey
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.backend.resources | nindent 10 }}
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      terminationGracePeriodSeconds: 30
+      restartPolicy: Always
