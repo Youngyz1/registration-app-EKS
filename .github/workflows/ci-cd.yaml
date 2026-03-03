@@ -11,9 +11,6 @@ env:
   FRONTEND_IMAGE: youngyz1/registration-frontend
 
 jobs:
-  # 
-  # JOB 1: SonarCloud Code Quality Scan
-  # 
   sonarcloud:
     name: SonarCloud Scan
     runs-on: ubuntu-latest
@@ -25,14 +22,18 @@ jobs:
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@master
+        with:
+          args: >
+            -Dsonar.projectKey=Youngyz1_registration-app-EKS
+            -Dsonar.organization=youngyz1
+            -Dsonar.sources=backend,frontend/src
+            -Dsonar.python.version=3.9
+            -Dsonar.exclusions=**/node_modules/**,**/venv/**,**/__pycache__/**,**/build/**
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
 
-  # 
-  # JOB 2: Build & Security Scan
-  # 
   build-and-scan:
     name: Build & Security Scan
     runs-on: ubuntu-latest
@@ -93,19 +94,15 @@ jobs:
         run: |
           sed -i "s|youngyz1/registration-backend:.*|youngyz1/registration-backend:${{ github.sha }}|g" k8s/backend/backend-deployment.yaml
           sed -i "s|youngyz1/registration-frontend:.*|youngyz1/registration-frontend:${{ github.sha }}|g" k8s/frontend/frontend-deployment.yaml
-          sed -i "s|tag:.*|tag: ${{ github.sha }}|g" helm/registration-app/values.yaml
 
       - name: Commit updated manifests
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add k8s/backend/backend-deployment.yaml k8s/frontend/frontend-deployment.yaml helm/registration-app/values.yaml
+          git add k8s/backend/backend-deployment.yaml k8s/frontend/frontend-deployment.yaml
           git commit -m "ci: update image tags to ${{ github.sha }}" || echo "No changes to commit"
           git push
 
-  # 
-  # JOB 3: OWASP ZAP Scan
-  # 
   owasp-zap:
     name: OWASP ZAP Scan
     runs-on: ubuntu-latest
@@ -123,9 +120,6 @@ jobs:
           name: zap-report
           path: report_html.html
 
-  # 
-  # JOB 4: Slack Notification
-  # 
   notify:
     name: Slack Notification
     runs-on: ubuntu-latest
