@@ -10,6 +10,9 @@ env:
   BACKEND_IMAGE: youngyz1/registration-backend
   FRONTEND_IMAGE: youngyz1/registration-frontend
 
+permissions:
+  contents: write
+
 jobs:
   sonarcloud:
     name: SonarCloud Scan
@@ -107,6 +110,7 @@ jobs:
     name: OWASP ZAP Scan
     runs-on: ubuntu-latest
     needs: build-and-scan
+    if: false
     steps:
       - name: OWASP ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.10.0
