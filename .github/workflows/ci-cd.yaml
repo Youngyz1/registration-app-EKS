@@ -12,6 +12,7 @@ env:
 
 permissions:
   contents: write
+  security-events: write  # needed for uploading SARIF to GitHub Security tab
 
 jobs:
   sonarcloud:
@@ -45,53 +46,97 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Podman
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y podman
+
       - name: Build Backend image
-        run: docker build -t ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ./backend
+        run: podman build -t ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ./backend
 
       - name: Build Frontend image
         run: |
-          docker build \
+          podman build \
             --build-arg REACT_APP_API_URL=${{ secrets.REACT_APP_API_URL }} \
             -t ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ./frontend
 
-      - name: Trivy scan backend
+      # --- TRIVY BACKEND ---
+      - name: Trivy backend (CRITICAL block)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
           format: table
-          exit-code: 0
-          severity: HIGH,CRITICAL
+          exit-code: 1
+          severity: CRITICAL
+        env:
+          TRIVY_PODMAN: "true"
 
-      - name: Trivy scan frontend
+      - name: Trivy backend (HIGH report)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          format: sarif
+          exit-code: 0
+          severity: HIGH
+          output: trivy-backend.sarif
+        env:
+          TRIVY_PODMAN: "true"
+
+      - name: Upload backend Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-backend.sarif
+
+      # --- TRIVY FRONTEND ---
+      - name: Trivy frontend (CRITICAL block)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           format: table
-          exit-code: 0
-          severity: HIGH,CRITICAL
+          exit-code: 1
+          severity: CRITICAL
+        env:
+          TRIVY_PODMAN: "true"
 
+      - name: Trivy frontend (HIGH report)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          format: sarif
+          exit-code: 0
+          severity: HIGH
+          output: trivy-frontend.sarif
+        env:
+          TRIVY_PODMAN: "true"
+
+      - name: Upload frontend Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-frontend.sarif
+
+      # --- SNYK ---
       - name: Snyk scan backend dependencies
         run: |
           pip install -r backend/requirements.txt
           npm install -g snyk
           snyk auth ${{ secrets.SNYK_TOKEN }}
-          snyk test --severity-threshold=high --file=backend/requirements.txt || true
-        continue-on-error: true
+          snyk test --severity-threshold=critical --file=backend/requirements.txt
 
+      # --- PUSH ---
       - name: Login to Docker Hub
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | podman login docker.io -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Push Backend image
         run: |
-          docker tag ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ${{ env.BACKEND_IMAGE }}:latest
-          docker push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
-          docker push ${{ env.BACKEND_IMAGE }}:latest
+          podman tag ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ${{ env.BACKEND_IMAGE }}:latest
+          podman push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          podman push ${{ env.BACKEND_IMAGE }}:latest
 
       - name: Push Frontend image
         run: |
-          docker tag ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ${{ env.FRONTEND_IMAGE }}:latest
-          docker push ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-          docker push ${{ env.FRONTEND_IMAGE }}:latest
+          podman tag ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ${{ env.FRONTEND_IMAGE }}:latest
+          podman push ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          podman push ${{ env.FRONTEND_IMAGE }}:latest
 
       - name: Update image tags in manifests
         run: |
