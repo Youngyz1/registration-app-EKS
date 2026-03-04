@@ -38,3 +38,7 @@ venv/
 node_modules/
 frontend/build/
 backend/__pycache__/
+
+terraform/*.backup
+terraform/terraform.tfstate
+terraform/terraform.tfstate.*
