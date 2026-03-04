@@ -21,7 +21,7 @@ spec:
         fsGroup: 101  # CHANGED: nginx group
       containers:
         - name: frontend
-          image: youngyz1/registration-frontend:e3bed18b7c5e0209748430db9d012cc706a95621
+          image: youngyz1/registration-frontend:e14c7bfe7992b46614dfe4351dfd405d145f1f43
           ports:
             - containerPort: 80
           
