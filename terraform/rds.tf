@@ -1,4 +1,4 @@
-﻿resource "aws_db_subnet_group" "main" {
+resource "aws_db_subnet_group" "main" {
   name       = "${var.cluster_name}-db-subnet-group"
   subnet_ids = aws_subnet.private[*].id
 
@@ -63,7 +63,11 @@ resource "aws_security_group_rule" "eks_to_rds" {
   from_port                = 5432
   to_port                  = 5432
   protocol                 = "tcp"
-  source_security_group_id = aws_eks_node_group.main.resources[0].remote_access_security_group_id
+  source_security_group_id = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
   security_group_id        = aws_security_group.rds.id
   description              = "Allow EKS nodes to connect to RDS PostgreSQL"
 }
+
+
+
+
