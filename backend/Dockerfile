@@ -3,7 +3,7 @@ FROM python:3.9-alpine
 WORKDIR /app
 
 # Install curl for healthcheck
-RUN apt-get update && apt-get install -y --no-install-recommends curl
+RUN apk add --no-cache curl
 
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
