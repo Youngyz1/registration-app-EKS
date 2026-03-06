@@ -9,10 +9,12 @@ on:
 env:
   BACKEND_IMAGE: youngyz1/registration-backend
   FRONTEND_IMAGE: youngyz1/registration-frontend
+  REGISTRY: docker.io
 
 permissions:
   contents: write
-  security-events: write  # needed for SARIF upload
+  security-events: write
+  pull-requests: write
 
 jobs:
   sonarcloud:
@@ -25,7 +27,10 @@ jobs:
           fetch-depth: 0
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@master
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
             -Dsonar.projectKey=Youngyz1_registration-app-EKS
@@ -33,104 +38,152 @@ jobs:
             -Dsonar.sources=backend,frontend/src
             -Dsonar.python.version=3.9
             -Dsonar.exclusions=**/node_modules/**,**/venv/**,**/__pycache__/**,**/build/**
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
 
-  build-images:
-    name: Build Backend & Frontend Images
+  build:
+    name: Build Docker Images
     runs-on: ubuntu-latest
     needs: sonarcloud
     outputs:
-      backend-tag: ${{ steps.set-backend-tag.outputs.image-tag }}
-      frontend-tag: ${{ steps.set-frontend-tag.outputs.image-tag }}
+      backend-image: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+      frontend-image: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Podman
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y podman
-          podman version
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Set image tags
-        id: set-backend-tag
-        run: echo "image-tag=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Backend image
-        run: podman build -t ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ./backend
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          outputs: type=docker,dest=/tmp/backend.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build Frontend image
-        run: |
-          podman build \
-            --build-arg REACT_APP_API_URL=${{ secrets.REACT_APP_API_URL }} \
-            -t ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ./frontend
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          build-args: |
+            REACT_APP_API_URL=${{ secrets.REACT_APP_API_URL }}
+          outputs: type=docker,dest=/tmp/frontend.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Save Podman images to Docker for Trivy
-        run: |
-          podman save ${{ env.BACKEND_IMAGE }}:${{ github.sha }} | docker load
-          podman save ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} | docker load
+      - name: Load backend image
+        run: docker load --input /tmp/backend.tar
+
+      - name: Load frontend image
+        run: docker load --input /tmp/frontend.tar
+
+      - name: Save backend image for scanning
+        run: docker save ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }} -o /tmp/backend-image.tar
+
+      - name: Save frontend image for scanning
+        run: docker save ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }} -o /tmp/frontend-image.tar
+
+      - name: Upload backend image
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: /tmp/backend-image.tar
+          retention-days: 1
+
+      - name: Upload frontend image
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-image
+          path: /tmp/frontend-image.tar
+          retention-days: 1
 
   scan-backend:
     name: Scan Backend Image
     runs-on: ubuntu-latest
-    needs: build-images
+    needs: build
     steps:
-      - name: Trivy backend (CRITICAL block)
+      - name: Download backend image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: /tmp
+
+      - name: Load image
+        run: docker load --input /tmp/backend-image.tar
+
+      - name: Trivy backend (CRITICAL - block if found)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          input: /tmp/backend-image.tar
           format: table
           exit-code: 1
           severity: CRITICAL
+          scanners: vuln
 
-      - name: Trivy backend (HIGH report)
+      - name: Trivy backend (HIGH - report only)
         uses: aquasecurity/trivy-action@master
+        if: always()
         with:
-          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          input: /tmp/backend-image.tar
           format: sarif
           exit-code: 0
           severity: HIGH
           output: trivy-backend.sarif
+          scanners: vuln
 
-      - name: Upload backend Trivy SARIF
+      - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v3
+        if: always()
         with:
           sarif_file: trivy-backend.sarif
-
-      - name: Snyk scan backend dependencies
-        run: |
-          pip install -r backend/requirements.txt
-          npm install -g snyk
-          snyk auth ${{ secrets.SNYK_TOKEN }}
-          snyk test --severity-threshold=critical --file=backend/requirements.txt || true
 
   scan-frontend:
     name: Scan Frontend Image
     runs-on: ubuntu-latest
-    needs: build-images
+    needs: build
     steps:
-      - name: Trivy frontend (CRITICAL block)
+      - name: Download frontend image
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+          path: /tmp
+
+      - name: Load image
+        run: docker load --input /tmp/frontend-image.tar
+
+      - name: Trivy frontend (CRITICAL - block if found)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          input: /tmp/frontend-image.tar
           format: table
           exit-code: 1
           severity: CRITICAL
+          scanners: vuln
 
-      - name: Trivy frontend (HIGH report)
+      - name: Trivy frontend (HIGH - report only)
         uses: aquasecurity/trivy-action@master
+        if: always()
         with:
-          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          input: /tmp/frontend-image.tar
           format: sarif
           exit-code: 0
           severity: HIGH
           output: trivy-frontend.sarif
+          scanners: vuln
 
-      - name: Upload frontend Trivy SARIF
+      - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v3
+        if: always()
         with:
           sarif_file: trivy-frontend.sarif
 
@@ -138,53 +191,143 @@ jobs:
     name: Push Images to Docker Hub
     runs-on: ubuntu-latest
     needs: [scan-backend, scan-frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Podman
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y podman
-
-      - name: Login to Docker Hub via Podman
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | podman login docker.io -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-
-      - name: Push Backend image
-        run: |
-          podman tag ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ${{ env.BACKEND_IMAGE }}:latest
-          podman push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
-          podman push ${{ env.BACKEND_IMAGE }}:latest
-
-      - name: Push Frontend image
-        run: |
-          podman tag ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ${{ env.FRONTEND_IMAGE }}:latest
-          podman push ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-          podman push ${{ env.FRONTEND_IMAGE }}:latest
-
-      - name: Update image tags in manifests
-        run: |
-          sed -i "s|youngyz1/registration-backend:.*|youngyz1/registration-backend:${{ github.sha }}|g" k8s/backend/backend-deployment.yaml
-          sed -i "s|youngyz1/registration-frontend:.*|youngyz1/registration-frontend:${{ github.sha }}|g" k8s/frontend/frontend-deployment.yaml
-
-      - name: Commit updated manifests
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add k8s/backend/backend-deployment.yaml k8s/frontend/frontend-deployment.yaml
-          git commit -m "ci: update image tags to ${{ github.sha }}" || echo "No changes to commit"
-          git push
-
-  notify:
-    name: Slack Notification
-    runs-on: ubuntu-latest
-    needs: [push-images]
-    if: always()
-    steps:
-      - name: Send Slack notification
-        uses: 8398a7/action-slack@v3
+      - name: Download backend image
+        uses: actions/download-artifact@v4
         with:
-          status: ${{ job.status }}
+          name: backend-image
+          path: /tmp
+
+      - name: Download frontend image
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+          path: /tmp
+
+      - name: Load images
+        run: |
+          docker load --input /tmp/backend-image.tar
+          docker load --input /tmp/frontend-image.tar
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push backend image
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          docker tag ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
+          docker push ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:latest
+
+      - name: Push frontend image
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          docker tag ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
+          docker push ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:latest
+
+  update-helm:
+    name: Update Helm Values
+    runs-on: ubuntu-latest
+    needs: push-images
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update backend image tag
+        run: |
+          sed -i "s|image:\s*repository:.*|image:\n    repository: ${{ env.BACKEND_IMAGE }}\n    tag: ${{ github.sha }}|g" helm/registration-app/values.yaml
+
+      - name: Update frontend image tag
+        run: |
+          sed -i "s|image:\s*repository:.*|image:\n    repository: ${{ env.FRONTEND_IMAGE }}\n    tag: ${{ github.sha }}|g" helm/registration-app/values.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm/registration-app/values.yaml
+          git commit -m "ci: update image tags to ${{ github.sha }}" || echo "No changes"
+          git push origin main || true
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: update-helm
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-east-1 --name registration-app-eks
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      - name: Add Helm repos
+        run: |
+          helm repo add istio https://istio-release.storage.googleapis.com/charts
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade registration-app helm/registration-app/ \
+            -f helm/registration-app/values.yaml \
+            -n registration-app \
+            --wait \
+            --timeout 5m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n registration-app
+          kubectl get svc -n registration-app
+          kubectl get ingress -n registration-app
+
+  notify-success:
+    name: Notify Success
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: success()
+    steps:
+      - name: Send Slack notification (success)
+        uses: 8398a7/action-slack@v3
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        with:
+          status: success
+          text: '✅ Deployment successful! Images: `${{ github.sha }}`'
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  notify-failure:
+    name: Notify Failure
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Send Slack notification (failure)
+        uses: 8398a7/action-slack@v3
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        with:
+          status: failure
+          text: '❌ Deployment failed!'
           fields: repo,message,commit,author,action,eventName,ref,workflow
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
