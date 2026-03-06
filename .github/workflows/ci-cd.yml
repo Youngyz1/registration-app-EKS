@@ -62,8 +62,11 @@ jobs:
 
       - name: Save Podman images to Docker for Trivy
         run: |
-          podman save ${{ env.BACKEND_IMAGE }}:${{ github.sha }} | docker load
-          podman save ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} | docker load
+          podman save --format docker-archive -o /tmp/backend.tar ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          docker load -i /tmp/backend.tar
+          podman save --format docker-archive -o /tmp/frontend.tar ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          docker load -i /tmp/frontend.tar
+          docker images | grep -E "registration"
 
       - name: Trivy backend (CRITICAL block)
         uses: aquasecurity/trivy-action@master

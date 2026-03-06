@@ -1,0 +1,655 @@
+# Registration App - EKS Deployment Guide
+
+## Quick Start (One Command)
+
+```bash
+# Fresh deployment
+terraform apply && helm install registration-app helm/registration-app/ -f helm/registration-app/values.yaml -n registration-app --create-namespace
+
+# Redeploy (existing cluster)
+terraform apply && helm upgrade registration-app helm/registration-app/ -f helm/registration-app/values.yaml -n registration-app
+```
+
+---
+
+## Step-by-Step Deployment
+
+### Phase 1: Infrastructure (Terraform)
+
+```bash
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+**What it creates:**
+- AWS EKS Cluster (2 nodes)
+- VPC with public/private subnets
+- NAT Gateways
+- RDS PostgreSQL database
+- ALB Controller IAM role
+- Security groups
+
+**Outputs saved:**
+- Cluster endpoint
+- RDS endpoint
+- VPC ID
+- Subnet IDs
+
+### Phase 2: Kubernetes Setup
+
+```bash
+# Update kubeconfig
+aws eks update-kubeconfig --region us-east-1 --name registration-app-eks
+
+# Verify cluster
+kubectl get nodes
+```
+
+### Phase 3: Install Istio Service Mesh
+
+```bash
+# Create namespace
+kubectl create namespace istio-system
+
+# Add Helm repo
+helm repo add istio https://istio-release.storage.googleapis.com/charts
+helm repo update
+
+# Install Istio base
+helm install istio-base istio/base -n istio-system --wait
+
+# Install Istio control plane
+helm install istiod istio/istiod -n istio-system --wait
+
+# Enable sidecar injection
+kubectl label namespace registration-app istio-injection=enabled --overwrite
+```
+
+### Phase 4: Install ALB Controller
+
+```bash
+# Add AWS Helm repo
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+
+# Install ALB controller
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=registration-app-eks \
+  --set serviceAccount.create=true \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="arn:aws:iam::958421185668:role/registration-app-eks-alb-controller-role" \
+  --set region=us-east-1 \
+  --set vpcId=vpc-045134b31ea191481
+
+# Verify
+kubectl get pods -n kube-system | grep aws-load-balancer
+```
+
+### Phase 5: Deploy Application with Helm
+
+```bash
+# Install application
+helm install registration-app helm/registration-app/ \
+  -f helm/registration-app/values.yaml \
+  -n registration-app --create-namespace
+
+# Verify pods
+kubectl get pods -n registration-app
+# Should show 6 pods: 3 backend, 3 frontend (all 2/2 Running with Istio sidecar)
+```
+
+### Phase 6: Verify Ingress & Get ALB DNS
+
+```bash
+# Wait for ALB to be provisioned (2-3 minutes)
+kubectl get ingress -n registration-app registration-app-ingress -o wide
+
+# Get ALB DNS name
+ALB_DNS=$(kubectl get ingress -n registration-app registration-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "Your app is at: http://$ALB_DNS"
+```
+
+### Phase 7: Test Application
+
+```bash
+# Test frontend
+curl http://$ALB_DNS/
+
+# Test backend API
+curl http://$ALB_DNS/api/health
+
+# Expected response: {"status":"healthy"}
+```
+
+---
+
+## Verify Everything is Working
+
+### Check Pods
+
+```bash
+kubectl get pods -n registration-app
+# All pods should show: READY 2/2, STATUS Running
+```
+
+### Check Services
+
+```bash
+kubectl get svc -n registration-app
+# frontend-service: ClusterIP
+# backend-service: ClusterIP
+```
+
+### Check Ingress
+
+```bash
+kubectl get ingress -n registration-app
+# Should show ADDRESS with ALB DNS name
+```
+
+### Check ALB Target Health
+
+```bash
+# Get target group ARN
+TG_ARN="arn:aws:elasticloadbalancing:us-east-1:958421185668:targetgroup/k8s-registra-backends-93d79abe0b/784c120c1cd2bccb"
+
+# Check target health
+aws elbv2 describe-target-health --target-group-arn $TG_ARN --region us-east-1 --output table
+# All targets should show: State = healthy
+```
+
+### Check HPA Status
+
+```bash
+kubectl get hpa -n registration-app
+# Should show: REFERENCE, TARGETS, MINPODS, MAXPODS, REPLICAS
+```
+
+---
+
+## Known Issues & Fixes
+
+### Issue 1: Ingress Has No ADDRESS
+
+**Symptom:** `kubectl get ingress` shows empty ADDRESS field for 10+ minutes
+
+**Causes:**
+- ALB controller not running
+- ALB controller lacks IAM permissions
+- Ingress configuration invalid
+
+**Fix:**
+
+```bash
+# Check ALB controller
+kubectl get pods -n kube-system | grep aws-load-balancer
+# Should show 2 pods in Running state
+
+# Restart ALB controller
+kubectl rollout restart deployment aws-load-balancer-controller -n kube-system
+kubectl rollout status deployment aws-load-balancer-controller -n kube-system
+
+# Wait 2 minutes and check ingress again
+kubectl get ingress -n registration-app registration-app-ingress -o wide
+```
+
+### Issue 2: ALB Targets Unhealthy
+
+**Symptom:** AWS Console shows "0 Healthy, 3 Unhealthy"
+
+**Causes:**
+- Istio AuthorizationPolicies blocking health checks
+- Istio PeerAuthentication (mTLS) enforcing
+
+**Fix:**
+
+```bash
+# Delete strict Istio security policies
+kubectl delete authorizationpolicy --all -n registration-app
+kubectl delete peerauthentication --all -n registration-app
+
+# Wait 30 seconds
+sleep 30
+
+# Verify targets are healthy
+TG_ARN="arn:aws:elasticloadbalancing:us-east-1:958421185668:targetgroup/k8s-registra-backends-93d79abe0b/784c120c1cd2bccb"
+aws elbv2 describe-target-health --target-group-arn $TG_ARN --region us-east-1 --query 'TargetHealthDescriptions[*].[Target.Id,TargetHealth.State]' --output table
+```
+
+### Issue 3: 502 Bad Gateway Error
+
+**Symptom:** Accessing ALB returns "502 Bad Gateway"
+
+**Causes:**
+- Backend targets not healthy
+- ALB routing rules misconfigured
+- Backend pods not running
+
+**Fix:**
+
+```bash
+# Check backend pods
+kubectl get pods -n registration-app -l app=backend
+# All should show: READY 2/2, STATUS Running
+
+# Check backend logs
+kubectl logs -l app=backend -n registration-app --tail=50
+
+# Check ingress rules
+kubectl get ingress -n registration-app registration-app-ingress -o yaml
+
+# If still broken, redeploy ingress
+kubectl delete ingress registration-app-ingress -n registration-app
+helm upgrade registration-app helm/registration-app/ -f helm/registration-app/values.yaml -n registration-app
+```
+
+### Issue 4: "RBAC: access denied" Error
+
+**Symptom:** Frontend or API returns "RBAC: access denied"
+
+**Causes:**
+- Istio AuthorizationPolicies too strict
+- PeerAuthentication blocking requests
+
+**Fix:**
+
+```bash
+# Delete all authorization policies
+kubectl delete authorizationpolicy --all -n registration-app
+
+# Delete all peer authentication policies
+kubectl delete peerauthentication --all -n registration-app
+
+# Wait 30 seconds for Istio to reconcile
+sleep 30
+
+# Test again
+curl http://$ALB_DNS/api/health
+```
+
+### Issue 5: AWS Console Shows Cached Data
+
+**Symptom:** AWS Console shows unhealthy targets but CLI shows healthy
+
+**Cause:** AWS Console cache hasn't refreshed (2 hour cache)
+
+**Fix:**
+
+```bash
+# Force refresh AWS CLI data
+aws elbv2 describe-target-health --target-group-arn $TG_ARN --region us-east-1
+
+# Manually refresh AWS Console (F5 or Ctrl+R)
+# Or wait 2 hours for automatic refresh
+```
+
+---
+
+## Environment Variables & Configuration
+
+### Required AWS Environment Variables
+
+```bash
+# Set AWS credentials
+export AWS_PROFILE=default
+export AWS_REGION=us-east-1
+
+# Or set access keys
+export AWS_ACCESS_KEY_ID=xxx
+export AWS_SECRET_ACCESS_KEY=xxx
+```
+
+### Helm Values Overrides
+
+```bash
+# Deploy with custom values
+helm install registration-app helm/registration-app/ \
+  -f helm/registration-app/values.yaml \
+  -f helm/registration-app/values-prod.yaml \
+  -n registration-app --create-namespace
+
+# Or override specific values
+helm install registration-app helm/registration-app/ \
+  --set backend.replicaCount=5 \
+  --set frontend.replicaCount=5 \
+  -n registration-app --create-namespace
+```
+
+### Deployment Environments
+
+```bash
+# Production (default)
+helm upgrade registration-app helm/registration-app/ \
+  -f helm/registration-app/values.yaml \
+  -n registration-app
+
+# Staging
+helm upgrade registration-app helm/registration-app/ \
+  -f helm/registration-app/values-staging.yaml \
+  -n registration-app
+
+# Development
+helm upgrade registration-app helm/registration-app/ \
+  -f helm/registration-app/values-dev.yaml \
+  -n registration-app
+```
+
+---
+
+## Teardown & Cleanup
+
+### Delete Application (Keep Infrastructure)
+
+```bash
+helm uninstall registration-app -n registration-app
+kubectl delete namespace registration-app
+```
+
+### Delete Everything (Infrastructure + Application)
+
+```bash
+# Delete Helm releases
+helm uninstall registration-app -n registration-app
+helm uninstall aws-load-balancer-controller -n kube-system
+helm uninstall istiod -n istio-system
+helm uninstall istio-base -n istio-system
+
+# Delete namespaces
+kubectl delete namespace registration-app
+kubectl delete namespace istio-system
+
+# Destroy infrastructure
+cd terraform
+terraform destroy
+```
+
+---
+
+## Monitoring & Debugging
+
+### View Application Logs
+
+```bash
+# Frontend logs
+kubectl logs -l app=frontend -n registration-app -f
+
+# Backend logs
+kubectl logs -l app=backend -n registration-app -f
+
+# All logs (last 100 lines)
+kubectl logs -n registration-app -l app --tail=100
+```
+
+### Check Pod Details
+
+```bash
+# Describe a pod
+kubectl describe pod <pod-name> -n registration-app
+
+# Check pod events
+kubectl describe pod <pod-name> -n registration-app | tail -20
+```
+
+### Check Service Connectivity
+
+```bash
+# Port forward to backend
+kubectl port-forward svc/backend-service 8000:8000 -n registration-app
+
+# In another terminal, test
+curl http://localhost:8000/api/health
+```
+
+### Check Ingress Rules
+
+```bash
+# View ingress YAML
+kubectl get ingress -n registration-app registration-app-ingress -o yaml
+
+# Check ingress events
+kubectl describe ingress registration-app-ingress -n registration-app
+```
+
+### Check HPA Status
+
+```bash
+# View HPA
+kubectl get hpa -n registration-app
+
+# Check HPA metrics
+kubectl top pods -n registration-app
+
+# View HPA details
+kubectl describe hpa backend-hpa -n registration-app
+```
+
+---
+
+## Performance Tuning
+
+### Increase Replicas
+
+```bash
+# Update values.yaml
+backend:
+  replicaCount: 5  # was 3
+
+frontend:
+  replicaCount: 5  # was 3
+
+# Upgrade
+helm upgrade registration-app helm/registration-app/ -f helm/registration-app/values.yaml -n registration-app
+```
+
+### Adjust HPA Thresholds
+
+```bash
+# In values.yaml
+hpa:
+  backend:
+    minReplicas: 3
+    maxReplicas: 20  # was 10
+    targetCPUUtilizationPercentage: 70  # was 80
+    targetMemoryUtilizationPercentage: 70  # was 80
+
+# Upgrade
+helm upgrade registration-app helm/registration-app/ -f helm/registration-app/values.yaml -n registration-app
+```
+
+### Adjust Resource Requests/Limits
+
+```bash
+# In values.yaml
+backend:
+  resources:
+    requests:
+      cpu: 250m      # was 100m
+      memory: 256Mi  # was 128Mi
+    limits:
+      cpu: 500m      # was 500m
+      memory: 512Mi  # was 512Mi
+
+# Upgrade
+helm upgrade registration-app helm/registration-app/ -f helm/registration-app/values.yaml -n registration-app
+```
+
+---
+
+## Security Best Practices
+
+### Enable Strict Istio Policies
+
+```bash
+# Create authorization policies (once app is stable)
+kubectl apply -f - <<EOF
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: backend-policy
+  namespace: registration-app
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/registration-app/sa/registration-app-sa"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/api/*"]
+EOF
+```
+
+### Enable mTLS
+
+```bash
+# Create PeerAuthentication (for service-to-service only)
+kubectl apply -f - <<EOF
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: registration-app
+spec:
+  mtls:
+    mode: STRICT
+EOF
+```
+
+### Rotate Credentials Regularly
+
+```bash
+# Update RDS password
+aws rds modify-db-instance --db-instance-identifier registration-app-eks-db \
+  --master-user-password <new-password> --apply-immediately
+
+# Update Kubernetes secrets
+kubectl patch secret registration-app-secrets -n registration-app \
+  -p '{"data":{"db-password":"'$(echo -n <new-password> | base64)'"}}'
+```
+
+---
+
+## Cost Optimization
+
+### Reduce Node Count
+
+```bash
+# In terraform/eks.tf
+desired_size = 1  # was 2
+min_size     = 1  # was 1
+max_size     = 2  # was 2
+
+terraform apply
+```
+
+### Use Spot Instances
+
+```bash
+# In terraform/eks.tf
+capacity_type = "SPOT"  # was ON_DEMAND
+
+terraform apply
+```
+
+### Reduce Replica Count
+
+```bash
+# In helm values.yaml
+backend:
+  replicaCount: 1  # was 3
+
+frontend:
+  replicaCount: 1  # was 3
+
+helm upgrade registration-app helm/registration-app/ -f helm/registration-app/values.yaml -n registration-app
+```
+
+---
+
+## CI/CD Integration (Future)
+
+When you add GitHub Actions or ArgoCD:
+
+```bash
+# Push to trigger deployment
+git push origin main
+
+# GitHub Actions will:
+# 1. Build Docker images
+# 2. Push to ECR
+# 3. Update Helm values
+# 4. ArgoCD auto-deploys
+
+# Or manual GitOps update
+helm upgrade registration-app helm/registration-app/ \
+  --set backend.image.tag=<new-sha> \
+  --set frontend.image.tag=<new-sha> \
+  -n registration-app
+```
+
+---
+
+## Support & Troubleshooting
+
+### Check System Status
+
+```bash
+# All resources
+kubectl get all -n registration-app
+
+# Detailed view
+kubectl get pods,svc,ingress,hpa -n registration-app
+
+# Events
+kubectl get events -n registration-app --sort-by='.lastTimestamp'
+```
+
+### Common Commands
+
+```bash
+# Restart pods
+kubectl rollout restart deployment backend -n registration-app
+kubectl rollout restart deployment frontend -n registration-app
+
+# Scale replicas
+kubectl scale deployment backend --replicas=5 -n registration-app
+
+# Port forward
+kubectl port-forward svc/backend-service 8000:8000 -n registration-app
+
+# Exec into pod
+kubectl exec -it <pod-name> -n registration-app -- /bin/bash
+```
+
+---
+
+## Version Information
+
+**Last Updated:** March 6, 2026
+
+**Kubernetes Version:** 1.31
+**Helm Version:** 3.12+
+**Istio Version:** 1.16+
+**AWS EKS Version:** Latest
+**Terraform Version:** 1.6+
+
+---
+
+## Document Maintenance
+
+Update this guide when:
+- Adding new features
+- Changing deployment process
+- Resolving new issues
+- Updating component versions
+- Improving security
+
+Commit changes with:
+```bash
+git commit -m "docs: update deployment guide for <change>"
+```
