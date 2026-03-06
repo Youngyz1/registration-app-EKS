@@ -1,0 +1,65 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: frontend-policy
+  namespace: registration-app
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  rules:
+  - to:
+    - operation:
+        methods:
+        - GET
+        - HEAD
+        ports:
+        - "80"
+  - from:
+    - source:
+        principals:
+        - '*'
+    to:
+    - operation:
+        methods:
+        - GET
+        - HEAD
+        - OPTIONS
+        - POST
+        - PUT
+        - DELETE
+        ports:
+        - "80"
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: backend-policy
+  namespace: registration-app
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  rules:
+  - to:
+    - operation:
+        methods:
+        - GET
+        ports:
+        - "8000"
+        paths:
+        - "/api/health"
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/registration-app/sa/registration-app-sa
+    to:
+    - operation:
+        methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+        ports:
+        - "8000"

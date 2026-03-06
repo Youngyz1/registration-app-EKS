@@ -36,26 +36,26 @@ spec:
     loadBalancer:
       simple: LEAST_REQUEST
 ---
-apiVersion: networking.istio.io/v1beta1
-kind: VirtualService
-metadata:
-  name: frontend
-  namespace: {{ .Values.namespace }}
-spec:
-  hosts:
-  - frontend
-  - frontend.{{ .Values.namespace }}
-  - frontend.{{ .Values.namespace }}.svc
-  - frontend.{{ .Values.namespace }}.svc.cluster.local
-  http:
-  - route:
-    - destination:
-        host: frontend
-      weight: 100
-    timeout: 30s
-    retries:
-      attempts: 3
-      perTryTimeout: 10s
+# apiVersion: networking.istio.io/v1beta1
+# kind: VirtualService
+# metadata:
+#   name: frontend
+#   namespace: {{ .Values.namespace }}
+# spec:
+#   hosts:
+#   - frontend
+#   - frontend.{{ .Values.namespace }}
+#   - frontend.{{ .Values.namespace }}.svc
+#   - frontend.{{ .Values.namespace }}.svc.cluster.local
+#   http:
+#   - route:
+#     - destination:
+#         host: frontend
+#       weight: 100
+#     timeout: 30s
+#     retries:
+#       attempts: 3
+#       perTryTimeout: 10s
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
