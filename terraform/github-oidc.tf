@@ -40,10 +40,11 @@ resource "aws_iam_role_policy" "github_actions_eks_access" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
+        Effect   = "Allow"
+        Action   = [
           "eks:DescribeCluster",
-          "eks:ListClusters"
+          "eks:ListClusters",
+          "eks:AccessKubernetesApi"
         ]
         Resource = "*"
       }

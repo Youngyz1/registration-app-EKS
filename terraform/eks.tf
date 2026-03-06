@@ -47,6 +47,15 @@ resource "aws_eks_cluster" "main" {
     endpoint_public_access  = true
   }
 
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
+  lifecycle {
+    ignore_changes = [access_config]
+  }
+
   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
 
   tags = {
@@ -110,4 +119,25 @@ resource "aws_eks_node_group" "main" {
   tags = {
     Name = "${var.cluster_name}-nodes"
   }
+}
+
+# GitHub Actions EKS Access
+resource "aws_eks_access_entry" "github_actions" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.github_actions.arn
+  type          = "STANDARD"
+
+  depends_on = [aws_eks_cluster.main]
+}
+
+resource "aws_eks_access_policy_association" "github_actions" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.github_actions.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.github_actions]
 }
