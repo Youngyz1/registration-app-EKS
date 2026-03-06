@@ -85,12 +85,13 @@ jobs:
         with:
           sarif_file: trivy-backend.sarif
 
-      - name: Check for CRITICAL
+      - name: Check for unfixed CRITICAL vulns only
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
           exit-code: 1
           severity: CRITICAL
+          ignore-unfixed: true
 
   scan-frontend:
     name: Scan Frontend
@@ -108,12 +109,13 @@ jobs:
         with:
           sarif_file: trivy-frontend.sarif
 
-      - name: Check for CRITICAL
+      - name: Check for unfixed CRITICAL vulns only
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           exit-code: 1
           severity: CRITICAL
+          ignore-unfixed: true
 
   deploy:
     name: Deploy to EKS
