@@ -23,7 +23,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@master
         with:
@@ -38,8 +37,8 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
 
-  build-and-scan:
-    name: Build & Security Scan
+  build-scan-push:
+    name: Build, Scan & Push
     runs-on: ubuntu-latest
     needs: sonarcloud
     steps:
@@ -61,7 +60,7 @@ jobs:
             --build-arg REACT_APP_API_URL=${{ secrets.REACT_APP_API_URL }} \
             -t ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ./frontend
 
-      - name: Save Podman images to Docker daemon for Trivy
+      - name: Save Podman images to Docker for Trivy
         run: |
           podman save ${{ env.BACKEND_IMAGE }}:${{ github.sha }} | docker load
           podman save ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} | docker load
@@ -148,7 +147,7 @@ jobs:
   owasp-zap:
     name: OWASP ZAP Scan
     runs-on: ubuntu-latest
-    needs: build-and-scan
+    needs: build-scan-push
     if: false
     steps:
       - name: OWASP ZAP Baseline Scan
@@ -156,7 +155,6 @@ jobs:
         with:
           target: ${{ secrets.APP_URL }}
         continue-on-error: true
-
       - name: Upload ZAP report
         uses: actions/upload-artifact@v4
         with:
@@ -166,7 +164,7 @@ jobs:
   notify:
     name: Slack Notification
     runs-on: ubuntu-latest
-    needs: [build-and-scan, owasp-zap]
+    needs: [build-scan-push, owasp-zap]
     if: always()
     steps:
       - name: Send Slack notification
