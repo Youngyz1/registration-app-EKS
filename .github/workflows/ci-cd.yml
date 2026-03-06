@@ -1,0 +1,178 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  BACKEND_IMAGE: youngyz1/registration-backend
+  FRONTEND_IMAGE: youngyz1/registration-frontend
+
+permissions:
+  contents: write
+  security-events: write
+
+jobs:
+  sonarcloud:
+    name: SonarCloud Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        with:
+          args: >
+            -Dsonar.projectKey=Youngyz1_registration-app-EKS
+            -Dsonar.organization=youngyz1
+            -Dsonar.sources=backend,frontend/src
+            -Dsonar.python.version=3.9
+            -Dsonar.exclusions=**/node_modules/**,**/venv/**,**/__pycache__/**,**/build/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+
+  build-and-scan:
+    name: Build & Security Scan
+    runs-on: ubuntu-latest
+    needs: sonarcloud
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y podman
+          podman version
+
+      - name: Build Backend image
+        run: podman build -t ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ./backend
+
+      - name: Build Frontend image
+        run: |
+          podman build \
+            --build-arg REACT_APP_API_URL=${{ secrets.REACT_APP_API_URL }} \
+            -t ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ./frontend
+
+      - name: Save Podman images to Docker daemon for Trivy
+        run: |
+          podman save ${{ env.BACKEND_IMAGE }}:${{ github.sha }} | docker load
+          podman save ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} | docker load
+
+      - name: Trivy backend (CRITICAL block)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+
+      - name: Trivy backend (HIGH report)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          format: sarif
+          exit-code: 0
+          severity: HIGH
+          output: trivy-backend.sarif
+
+      - name: Upload backend Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-backend.sarif
+
+      - name: Trivy frontend (CRITICAL block)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+
+      - name: Trivy frontend (HIGH report)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          format: sarif
+          exit-code: 0
+          severity: HIGH
+          output: trivy-frontend.sarif
+
+      - name: Upload frontend Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-frontend.sarif
+
+      - name: Snyk scan backend dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          npm install -g snyk
+          snyk auth ${{ secrets.SNYK_TOKEN }}
+          snyk test --severity-threshold=critical --file=backend/requirements.txt || true
+
+      - name: Login to Docker Hub via Podman
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | podman login docker.io -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Push Backend image
+        run: |
+          podman tag ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ${{ env.BACKEND_IMAGE }}:latest
+          podman push ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          podman push ${{ env.BACKEND_IMAGE }}:latest
+
+      - name: Push Frontend image
+        run: |
+          podman tag ${{ env.FRONTEND_IMAGE }}:${{ github.sha }} ${{ env.FRONTEND_IMAGE }}:latest
+          podman push ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          podman push ${{ env.FRONTEND_IMAGE }}:latest
+
+      - name: Update image tags in manifests
+        run: |
+          sed -i "s|youngyz1/registration-backend:.*|youngyz1/registration-backend:${{ github.sha }}|g" k8s/backend/backend-deployment.yaml
+          sed -i "s|youngyz1/registration-frontend:.*|youngyz1/registration-frontend:${{ github.sha }}|g" k8s/frontend/frontend-deployment.yaml
+
+      - name: Commit updated manifests
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add k8s/backend/backend-deployment.yaml k8s/frontend/frontend-deployment.yaml
+          git commit -m "ci: update image tags to ${{ github.sha }}" || echo "No changes to commit"
+          git push
+
+  owasp-zap:
+    name: OWASP ZAP Scan
+    runs-on: ubuntu-latest
+    needs: build-and-scan
+    if: false
+    steps:
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: ${{ secrets.APP_URL }}
+        continue-on-error: true
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: report_html.html
+
+  notify:
+    name: Slack Notification
+    runs-on: ubuntu-latest
+    needs: [build-and-scan, owasp-zap]
+    if: always()
+    steps:
+      - name: Send Slack notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
