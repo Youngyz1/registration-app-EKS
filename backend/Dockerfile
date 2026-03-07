@@ -13,12 +13,15 @@ WORKDIR /app
 
 RUN apk add --no-cache curl
 
-# Copy from build stage
-COPY --from=build /app /app
+# Copy Python packages from build stage
+COPY --from=build /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
+COPY --from=build /usr/local/bin /usr/local/bin
 
-# Run migrations/initialization before starting app
-RUN python -c "from init_db import init_db; init_db()"
+# Copy application code
+COPY . .
 
 EXPOSE 8000
 
+# Database tables will be initialized automatically on app startup
+# via init_db() call in main.py
 CMD ["python", "main.py"]
