@@ -19,6 +19,8 @@ spec:
     metadata:
       labels:
         app: backend
+      annotations:
+        traffic.sidecar.istio.io/excludeInboundPorts: "8000"
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       securityContext:
@@ -101,3 +103,4 @@ spec:
         emptyDir: {}
       terminationGracePeriodSeconds: 30
       restartPolicy: Always
+
