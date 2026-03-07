@@ -13,7 +13,7 @@ frontend:
   
   image:
     repository: youngyz1/registration-frontend
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
     tag: "latest"  # Will be overridden by CI/CD with actual image tag
   
   service:
@@ -42,7 +42,7 @@ backend:
   
   image:
     repository: youngyz1/registration-backend
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
     tag: "latest"  # Will be overridden by CI/CD with actual image tag
   
   service:
@@ -251,6 +251,7 @@ resourceQuota:
   limits:
     memory: "4Gi"
     cpu: "4"
+
 
 
 
