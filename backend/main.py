@@ -15,6 +15,7 @@ load_dotenv()
 
 # Database
 from database import engine, Base, get_db
+from init_db import init_db
 import models
 
 # Create tables if they don't exist
@@ -199,5 +200,6 @@ app.include_router(api_router)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+
 
 
