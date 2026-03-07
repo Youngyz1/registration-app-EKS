@@ -187,8 +187,8 @@ secrets:
   
   # External Secrets Operator (for AWS Secrets Manager)
   externalSecrets:
-    enabled: false  # Set to true after terraform apply creates the IAM role
-    roleArn: ""     # Fill with: terraform output external_secrets_role_arn
+    enabled: true
+    roleArn: "arn:aws:iam::958421185668:role/registration-app-eks-external-secrets-role"
     region: "us-east-1"
     secretName: "registration-app/secrets"
 
@@ -250,6 +250,7 @@ resourceQuota:
   limits:
     memory: "4Gi"
     cpu: "4"
+
 
 
 

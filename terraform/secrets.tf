@@ -29,7 +29,7 @@ resource "aws_iam_role" "external_secrets" {
       Condition = {
         StringEquals = {
           "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
-          "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:external-secrets:external-secrets"
+          "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:registration-app:external-secrets-sa"
         }
       }
     }]
@@ -62,3 +62,4 @@ output "app_secret_arn" {
   description = "ARN of the app secrets in AWS Secrets Manager"
   value       = aws_secretsmanager_secret.app_secrets.arn
 }
+
