@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build
 
 # ---------- Production Stage ----------
-FROM nginx:1.27.4-alpine3.21
+FROM nginx:latest-alpine
 COPY --from=build /app/build /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
