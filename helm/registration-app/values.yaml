@@ -187,11 +187,10 @@ secrets:
   
   # External Secrets Operator (for AWS Secrets Manager)
   externalSecrets:
-    enabled: false  # Set to true to use AWS Secrets Manager
-    refreshInterval: "1h"
-    backendType: "awsSecretsManager"
-    awsRegion: "us-east-1"
-    secretName: "registration-app-secrets"
+    enabled: false  # Set to true after terraform apply creates the IAM role
+    roleArn: ""     # Fill with: terraform output external_secrets_role_arn
+    region: "us-east-1"
+    secretName: "registration-app/secrets"
 
 # ============================================
 # CONFIGURATION
@@ -251,6 +250,8 @@ resourceQuota:
   limits:
     memory: "4Gi"
     cpu: "4"
+
+
 
 
 
