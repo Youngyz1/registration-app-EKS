@@ -141,3 +141,10 @@ resource "aws_eks_access_policy_association" "github_actions" {
 
   depends_on = [aws_eks_access_entry.github_actions]
 }
+# EBS CSI Driver addon
+resource "aws_eks_addon" "ebs_csi_driver" {
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "aws-ebs-csi-driver"
+
+  depends_on = [aws_eks_node_group.main]
+}
