@@ -44,3 +44,16 @@ output "alb_controller_role_arn" {
   description = "ALB Controller IAM Role ARN"
   value       = aws_iam_role.alb_controller.arn
 }
+
+resource "null_resource" "alb_policy_version" {
+  triggers = {
+    policy_arn = aws_iam_policy.alb_controller.arn
+    policy_hash = filemd5("${path.module}/alb-iam-policy.json")
+  }
+
+  provisioner "local-exec" {
+    command = "aws iam create-policy-version --policy-arn ${aws_iam_policy.alb_controller.arn} --policy-document file://${path.module}/alb-iam-policy.json --set-as-default"
+  }
+
+  depends_on = [aws_iam_policy.alb_controller]
+}
