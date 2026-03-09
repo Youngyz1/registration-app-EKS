@@ -80,7 +80,7 @@ jobs:
           format: sarif
           output: trivy-backend.sarif
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-backend.sarif
 
@@ -104,7 +104,7 @@ jobs:
           format: sarif
           output: trivy-frontend.sarif
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-frontend.sarif
 
@@ -131,7 +131,9 @@ jobs:
           aws-region: us-east-1
 
       - run: aws eks update-kubeconfig --region us-east-1 --name registration-app-eks
-      - uses: azure/setup-helm@v3
+      - uses: azure/setup-helm@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Deploy
         run: |
