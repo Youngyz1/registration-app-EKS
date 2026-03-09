@@ -102,3 +102,44 @@ resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private[count.index].id
 }
+
+# Allow monitoring and DevOps tool ports on EKS cluster SG
+resource "aws_security_group_rule" "eks_sonarqube" {
+  type              = "ingress"
+  from_port         = 9000
+  to_port           = 9000
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.eks_cluster.id
+  description       = "SonarQube"
+}
+
+resource "aws_security_group_rule" "eks_grafana" {
+  type              = "ingress"
+  from_port         = 3000
+  to_port           = 3000
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.eks_cluster.id
+  description       = "Grafana"
+}
+
+resource "aws_security_group_rule" "eks_prometheus" {
+  type              = "ingress"
+  from_port         = 9090
+  to_port           = 9090
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.eks_cluster.id
+  description       = "Prometheus"
+}
+
+resource "aws_security_group_rule" "eks_alertmanager" {
+  type              = "ingress"
+  from_port         = 9093
+  to_port           = 9093
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.eks_cluster.id
+  description       = "Alertmanager"
+}
