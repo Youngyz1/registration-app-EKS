@@ -136,7 +136,8 @@ kubectl get pods -n registration-app
 ```powershell
 Start-Sleep -Seconds 90
 kubectl get ingress -n registration-app
-# Both ingresses share same ALB DNS via group.name annotation
+# Both ingresses share same ALB DNS via group.name annotation!
+![alt text](image-1.png)
 
 $ALB_URL = "http://$(kubectl get ingress registration-app-ingress-backend -n registration-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
 
