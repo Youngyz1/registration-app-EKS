@@ -16,24 +16,22 @@ permissions:
   id-token: write
 
 jobs:
-  sonarcloud:
-    name: SonarCloud Scan
+  sonarqube:
+    name: SonarQube Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: SonarCloud Scan
+      - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         with:
           args: >
-            -Dsonar.projectKey=Youngyz1_registration-app-EKS
-            -Dsonar.organization=youngyz1
+            -Dsonar.projectKey=registration-app
             -Dsonar.sources=backend,frontend/src
             -Dsonar.python.version=3.9
             -Dsonar.exclusions=**/node_modules/**,**/venv/**,**/__pycache__/**,**/build/**
@@ -41,7 +39,7 @@ jobs:
   build:
     name: Build & Push Images
     runs-on: ubuntu-latest
-    needs: sonarcloud
+    needs: sonarqube
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -125,7 +123,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Configure AWS credentials with OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -134,7 +132,7 @@ jobs:
 
       - run: aws eks update-kubeconfig --region us-east-1 --name registration-app-eks
       - uses: azure/setup-helm@v3
-      
+
       - name: Deploy
         run: |
           helm upgrade registration-app helm/registration-app/ \
