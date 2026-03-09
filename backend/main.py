@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -9,6 +10,10 @@ from passlib.context import CryptContext
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
+
+# Prometheus metrics
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+import time
 
 # Load environment variables
 load_dotenv()
@@ -24,10 +29,60 @@ Base.metadata.create_all(bind=engine)
 # Initialize FastAPI app
 app = FastAPI(title="Backend API")
 
+# ===== Prometheus Metrics =====
+requests_total = Counter(
+    'registration_app_requests_total',
+    'Total HTTP requests',
+    ['method', 'endpoint', 'status']
+)
+
+request_duration_seconds = Histogram(
+    'registration_app_request_duration_seconds',
+    'HTTP request duration in seconds',
+    ['method', 'endpoint']
+)
+
+users_total = Gauge(
+    'registration_app_users_total',
+    'Total number of registered users'
+)
+
+active_sessions = Gauge(
+    'registration_app_active_sessions',
+    'Number of active sessions'
+)
+
+registration_errors_total = Counter(
+    'registration_app_registration_errors_total',
+    'Total registration errors',
+    ['error_type']
+)
+
+# ===== Metrics Middleware =====
+@app.middleware("http")
+async def metrics_middleware(request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+    
+    # Record metrics
+    requests_total.labels(
+        method=request.method,
+        endpoint=request.url.path,
+        status=response.status_code
+    ).inc()
+    
+    request_duration_seconds.labels(
+        method=request.method,
+        endpoint=request.url.path
+    ).observe(duration)
+    
+    return response
+
 # API router
 api_router = APIRouter(prefix="/api")
 
-# ✅ Fix 1 - Restrict CORS
+#  Fix 1 - Restrict CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
@@ -36,7 +91,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-# ✅ Fix 2 - Fail if SECRET_KEY not set
+#  Fix 2 - Fail if SECRET_KEY not set
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not SECRET_KEY:
     raise RuntimeError("JWT_SECRET_KEY environment variable is not set!")
@@ -48,9 +103,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/token")
 
-# ------------------------
 # Pydantic models
-# ------------------------
 class UserBase(BaseModel):
     username: str
     email: str
@@ -75,9 +128,7 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     username: Optional[str] = None
 
-# ------------------------
 # Utility functions
-# ------------------------
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -86,40 +137,60 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    # ✅ Fix 3 - timezone aware datetime
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# ------------------------
+def update_user_metrics(db: Session):
+    """Update Prometheus metrics for users"""
+    try:
+        user_count = db.query(models.User).count()
+        users_total.set(user_count)
+    except Exception as e:
+        print(f"Error updating user metrics: {e}")
+
+# Metrics Endpoint
+@app.get("/metrics")
+def metrics():
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 # API Routes
-# ------------------------
 @api_router.post("/register", response_model=User)
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(
-        (models.User.username == user.username) |
-        (models.User.email == user.email)
-    ).first()
+    try:
+        db_user = db.query(models.User).filter(
+            (models.User.username == user.username) |
+            (models.User.email == user.email)
+        ).first()
 
-    if db_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Username or email already registered"
+        if db_user:
+            registration_errors_total.labels(error_type="duplicate_user").inc()
+            raise HTTPException(
+                status_code=400,
+                detail="Username or email already registered"
+            )
+
+        hashed_password = get_password_hash(user.password)
+        new_user = models.User(
+            username=user.username,
+            email=user.email,
+            hashed_password=hashed_password,
+            is_active=True,
+            created_at=datetime.now(timezone.utc)
         )
 
-    hashed_password = get_password_hash(user.password)
-    new_user = models.User(
-        username=user.username,
-        email=user.email,
-        hashed_password=hashed_password,
-        is_active=True,
-        created_at=datetime.now(timezone.utc)
-    )
-
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        
+        update_user_metrics(db)
+        return new_user
+    except HTTPException:
+        raise
+    except Exception as e:
+        registration_errors_total.labels(error_type="registration_error").inc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/token", response_model=Token)
 def login_for_access_token(
@@ -142,6 +213,8 @@ def login_for_access_token(
         data={"sub": user.username},
         expires_delta=access_token_expires
     )
+    
+    active_sessions.inc()
     return {"access_token": access_token, "token_type": "bearer"}
 
 @api_router.get("/users/me", response_model=User)
@@ -162,7 +235,6 @@ def read_users_me(
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
-# ✅ Fix 4 - Protect /users endpoint
 @api_router.get("/users")
 def get_all_users(
     token: str = Depends(oauth2_scheme),
@@ -186,22 +258,17 @@ def get_all_users(
         } for u in users
     ]
 
-# Healthcheck
 @api_router.get("/health")
-def health_check():
-    return {"status": "healthy"}
+def health_check(db: Session = Depends(get_db)):
+    try:
+        db.execute("SELECT 1")
+        update_user_metrics(db)
+        return {"status": "healthy"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
 
-# Include router
 app.include_router(api_router)
 
-# ------------------------
-# Main entry
-# ------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
-
-
-
-
-

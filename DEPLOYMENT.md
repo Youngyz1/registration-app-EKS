@@ -317,14 +317,19 @@ with the new ALB URL, then trigger a rebuild so the frontend uses the correct AP
 git commit --allow-empty -m "ci: trigger rebuild with updated REACT_APP_API_URL"
 git push
 ``````
-# Monitoring
+## MONITORING SETUP (Prometheus, Grafana, Loki)
 
-# Add repos
+### Step 1 - Add Helm Repos
+```powershell
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
+```
 
-# Install kube-prometheus-stack with ClusterIP services
+---
+
+### Step 2 - Install kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+```powershell
 helm install prometheus prometheus-community/kube-prometheus-stack `
   -n monitoring --create-namespace `
   --set grafana.adminPassword=admin123 `
@@ -334,16 +339,15 @@ helm install prometheus prometheus-community/kube-prometheus-stack `
 
 Start-Sleep -Seconds 120
 kubectl get pods -n monitoring
+# All pods should be Running
+```
 
-Write-Host "=== INSTALLING LOKI ===" -ForegroundColor Cyan
-Write-Host ""
+---
 
-# Install Loki Stack (includes Loki, Promtail, and Grafana integration)
-helm uninstall loki -n monitoring
-
-kubectl delete pvc storage-loki-0 -n monitoring
-
-helm install loki grafana/loki-stack -n monitoring `
+### Step 3 - Install Loki Stack (Loki + Promtail)
+```powershell
+helm install loki grafana/loki-stack `
+  -n monitoring `
   --set loki.persistence.enabled=true `
   --set loki.persistence.size=10Gi `
   --set loki.persistence.storageClassName=gp2 `
@@ -352,36 +356,123 @@ helm install loki grafana/loki-stack -n monitoring `
   --set prometheus.enabled=false
 
 Start-Sleep -Seconds 60
+kubectl get pods -n monitoring | Select-String "loki"
+# loki-0: Running 1/1
+# loki-promtail-*: Running 1/1 (one per node)
+```
 
-kubectl get pvc -n monitoring
+---
 
-# Now check the pod:
+### Step 4 - Expose Grafana via ALB
+```powershell
+# Nodes are in private subnets - must use ALB ingress, NOT LoadBalancer type
+@"
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-ingress
+  namespace: monitoring
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+spec:
+  ingressClassName: alb
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus-grafana
+            port:
+              number: 80
+"@ | Out-File -FilePath grafana-ingress.yaml -Encoding ascii
 
-kubectl get pods -n monitoring -l app=loki
-
-# Now check all monitoring pods:
-
-kubectl get pods -n monitoring
-
-'{"spec":{"type":"LoadBalancer"}}' | Out-File -FilePath patch-lb.json -Encoding ascii -NoNewline
-
-kubectl patch svc prometheus-grafana -n monitoring --type merge --patch-file patch-lb.json
-kubectl patch svc prometheus-kube-prometheus-prometheus -n monitoring --type merge --patch-file patch-lb.json
-
+kubectl apply -f grafana-ingress.yaml
 Start-Sleep -Seconds 60
-kubectl get svc -n monitoring | Select-String "LoadBalancer"
 
-# Now open the NodePorts for Grafana and Prometheus on the node SG:
+$GRAFANA_URL = "http://$(kubectl get ingress grafana-ingress -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+echo "Grafana URL: $GRAFANA_URL"
+# Login: admin / admin123
+```
 
-# Open Grafana and Prometheus NodePorts
-foreach ($port in @(31151, 30198)) {
-  aws ec2 authorize-security-group-ingress `
-    --group-id sg-0d97c3e91b2c67df4 `
-    --protocol tcp --port $port --cidr 0.0.0.0/0 `
-    --region us-east-1 2>$null
-}
+---
 
-echo "NodePorts opened"
+### Step 5 - Add Loki Data Source in Grafana
+1. Go to **Connections** -> **Data Sources** -> **Add data source**
+2. Select **Loki**
+3. Get the Loki cluster IP:
+```powershell
+kubectl get svc loki -n monitoring -o jsonpath='{.spec.clusterIP}'
+```
+4. Set URL to: `http://<loki-cluster-ip>:3100`
+5. Click **Save & Test**
+
+Note: Health check may show a parse error due to Grafana/Loki version mismatch.
+This is cosmetic - the data source still works for queries.
+Verify by going to Explore -> Loki -> run `{namespace="registration-app"}`
+
+---
+
+### Step 6 - Import Grafana Dashboards
+Go to **Dashboards** -> **Import** and import:
+
+| Dashboard ID | Name | Data Source |
+|---|---|---|
+| `15760` | Kubernetes / Views / Pods | Prometheus |
+| `1860` | Node Exporter Full | Prometheus |
+| `13639` | Loki Log Analytics | Loki |
+
+---
+
+### Step 7 - Verify Logs are Flowing
+```powershell
+kubectl exec -n monitoring loki-0 -- wget -qO- "http://localhost:3100/loki/api/v1/labels"
+# Should return labels including: namespace, pod, container, app
+
+kubectl exec -n monitoring loki-0 -- wget -qO- "http://localhost:3100/loki/api/v1/query?query=%7Bnamespace%3D%22registration-app%22%7D&limit=5"
+# Should return log entries from backend pods
+```
+
+---
+
+## MONITORING TROUBLESHOOTING
+
+### Grafana/Loki health check parse error
+Known version compatibility issue between Grafana 11.x and Loki 2.x.
+Data source still works for queries despite the error.
+
+### Loki PVC not binding
+```powershell
+kubectl get pvc -n monitoring
+# If stuck in Pending, check EBS CSI driver is running:
+kubectl get pods -n kube-system | Select-String "ebs-csi"
+```
+
+### No logs in Grafana Explore
+```powershell
+# Verify Promtail is running on all nodes
+kubectl get pods -n monitoring | Select-String "promtail"
+# Should show one pod per node (3 pods for 3 nodes)
+
+# Verify Loki is receiving logs
+kubectl exec -n monitoring loki-0 -- wget -qO- http://localhost:3100/ready
+# Should return: ready
+```
+
+### Grafana LoadBalancer not accessible
+Nodes are in private subnets - LoadBalancer type will not work.
+Always use ALB ingress. Re-apply grafana-ingress.yaml:
+```powershell
+kubectl apply -f grafana-ingress.yaml
+kubectl get ingress -n monitoring
+```
+
+### DESTROY - delete monitoring ingress before terraform destroy
+```powershell
+kubectl delete ingress grafana-ingress -n monitoring
 
 ## DESTROY
 ``````powershell
