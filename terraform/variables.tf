@@ -1,4 +1,4 @@
-﻿variable "aws_region" {
+variable "aws_region" {
   description = "AWS region"
   type        = string
   default     = "us-east-1"
@@ -43,13 +43,13 @@ variable "public_subnet_cidrs" {
 variable "node_instance_type" {
   description = "EC2 instance type for nodes"
   type        = string
-  default     = "t3.medium"
+  default     = "t3.large"
 }
 
 variable "node_desired_size" {
   description = "Desired number of nodes"
   type        = number
-  default     = 2
+    default     = 3
 }
 
 variable "node_min_size" {
@@ -70,3 +70,4 @@ variable "db_password" {
   sensitive   = true
   default     = "postgres123!"
 }
+
