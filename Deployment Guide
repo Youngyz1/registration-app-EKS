@@ -82,7 +82,15 @@ Start-Sleep -Seconds 60
 kubectl get pods -n kube-system | Select-String "aws-load-balancer"
 # Should show: 2 pods, 1/1 Running
 ```
+## Install External Secrets Operator CRDs 
 
+helm repo add external-secrets https://charts.external-secrets.io
+helm repo update
+
+helm install external-secrets external-secrets/external-secrets `
+  -n external-secrets `
+  --create-namespace `
+  --wait
 ---
 
 ### Step 6 - Deploy Application
