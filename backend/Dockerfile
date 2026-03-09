@@ -1,31 +1,26 @@
 # ---------- Build Stage ----------
 FROM python:3.9-alpine AS build
 WORKDIR /app
-
-# Update Alpine packages to fix CVE-2025-15467
-RUN apk update && apk upgrade
-
+RUN apk update && apk upgrade --no-cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
+COPY main.py .
+COPY database.py .
+COPY models.py .
+COPY init_db.py .
 
 # ---------- Production Stage ----------
 FROM python:3.9-alpine
 WORKDIR /app
-
-# Update Alpine packages to fix OpenSSL CVE-2025-15467
-RUN apk update && apk upgrade && apk add --no-cache curl
-
-# Copy Python packages from build stage
+RUN apk update && apk upgrade --no-cache && apk add --no-cache curl
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 COPY --from=build /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
 COPY --from=build /usr/local/bin /usr/local/bin
-
-# Copy application code
-COPY . .
-
+COPY --from=build /app/main.py .
+COPY --from=build /app/database.py .
+COPY --from=build /app/models.py .
+COPY --from=build /app/init_db.py .
+RUN chown -R appuser:appgroup /app
+USER appuser
 EXPOSE 8000
-
-# Database tables will be initialized automatically on app startup
-# via init_db() call in main.py
 CMD ["python", "main.py"]

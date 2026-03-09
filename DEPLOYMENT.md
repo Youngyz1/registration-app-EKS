@@ -317,8 +317,71 @@ with the new ALB URL, then trigger a rebuild so the frontend uses the correct AP
 git commit --allow-empty -m "ci: trigger rebuild with updated REACT_APP_API_URL"
 git push
 ``````
+# Monitoring
 
----
+# Add repos
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+# Install kube-prometheus-stack with ClusterIP services
+helm install prometheus prometheus-community/kube-prometheus-stack `
+  -n monitoring --create-namespace `
+  --set grafana.adminPassword=admin123 `
+  --set grafana.service.type=ClusterIP `
+  --set prometheus.prometheusSpec.service.type=ClusterIP `
+  --set alertmanager.alertmanagerSpec.service.type=ClusterIP
+
+Start-Sleep -Seconds 120
+kubectl get pods -n monitoring
+
+Write-Host "=== INSTALLING LOKI ===" -ForegroundColor Cyan
+Write-Host ""
+
+# Install Loki Stack (includes Loki, Promtail, and Grafana integration)
+helm uninstall loki -n monitoring
+
+kubectl delete pvc storage-loki-0 -n monitoring
+
+helm install loki grafana/loki-stack -n monitoring `
+  --set loki.persistence.enabled=true `
+  --set loki.persistence.size=10Gi `
+  --set loki.persistence.storageClassName=gp2 `
+  --set promtail.enabled=true `
+  --set grafana.enabled=false `
+  --set prometheus.enabled=false
+
+Start-Sleep -Seconds 60
+
+kubectl get pvc -n monitoring
+
+# Now check the pod:
+
+kubectl get pods -n monitoring -l app=loki
+
+# Now check all monitoring pods:
+
+kubectl get pods -n monitoring
+
+'{"spec":{"type":"LoadBalancer"}}' | Out-File -FilePath patch-lb.json -Encoding ascii -NoNewline
+
+kubectl patch svc prometheus-grafana -n monitoring --type merge --patch-file patch-lb.json
+kubectl patch svc prometheus-kube-prometheus-prometheus -n monitoring --type merge --patch-file patch-lb.json
+
+Start-Sleep -Seconds 60
+kubectl get svc -n monitoring | Select-String "LoadBalancer"
+
+# Now open the NodePorts for Grafana and Prometheus on the node SG:
+
+# Open Grafana and Prometheus NodePorts
+foreach ($port in @(31151, 30198)) {
+  aws ec2 authorize-security-group-ingress `
+    --group-id sg-0d97c3e91b2c67df4 `
+    --protocol tcp --port $port --cidr 0.0.0.0/0 `
+    --region us-east-1 2>$null
+}
+
+echo "NodePorts opened"
 
 ## DESTROY
 ``````powershell
