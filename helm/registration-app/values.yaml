@@ -14,13 +14,13 @@ frontend:
   image:
     repository: youngyz1/registration-frontend
     pullPolicy: Always
-    tag: "latest"  # Will be overridden by CI/CD with actual image tag
+    tag: "latest"
   
   service:
     type: ClusterIP
     port: 80
     targetPort: 80
-    nodePort: 30080  # For debugging only, Ingress is primary
+    nodePort: 30080
   
   resources:
     requests:
@@ -43,7 +43,7 @@ backend:
   image:
     repository: youngyz1/registration-backend
     pullPolicy: Always
-    tag: "latest"  # Will be overridden by CI/CD with actual image tag
+    tag: "latest"
   
   service:
     type: ClusterIP
@@ -63,7 +63,6 @@ backend:
     ENVIRONMENT: "production"
     DATABASE_POOL_SIZE: "20"
   
-  # Database connection
   database:
     host: "registration-app-eks-db.cmd6quusggmv.us-east-1.rds.amazonaws.com"
     port: 5432
@@ -92,14 +91,12 @@ postgres:
       memory: "1Gi"
       cpu: "500m"
   
-  # Persistent Volume
   persistence:
     enabled: true
-    storageClass: "gp2"  # AWS EBS storage class
+    storageClass: "gp2"
     size: "20Gi"
     path: /var/lib/postgresql/data
   
-  # Initial database
   initdb:
     database: "registrationdb"
     user: "dbadmin"
@@ -123,7 +120,7 @@ autoscaling:
     targetCPUUtilizationPercentage: 80
 
 # ============================================
-# POD DISRUPTION BUDGET (High Availability)
+# POD DISRUPTION BUDGET
 # ============================================
 podDisruptionBudget:
   backend:
@@ -134,24 +131,22 @@ podDisruptionBudget:
     minAvailable: 1
 
 # ============================================
-# NETWORK POLICIES (Security)
+# NETWORK POLICIES
 # ============================================
 networkPolicy:
   enabled: true
 
 # ============================================
-# INGRESS (ALB - Application Load Balancer)
+# INGRESS (ALB)
 # ============================================
 ingress:
   enabled: true
-  className: "alb"  # AWS ALB Ingress Controller
+  className: "alb"
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-    alb.ingress.kubernetes.io/ssl-redirect: '443'
-    # Uncomment and add your certificate ARN:
-    # alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/CERT_ID"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/wafv2-acl-arn: "arn:aws:wafv2:us-east-1:958421185668:regional/webacl/registration-app-eks-waf/30573393-b800-4bc5-b64f-17faa185620d"
   hosts:
     - host: "registration-app.example.com"
       paths:
@@ -173,10 +168,9 @@ monitoring:
     logLevel: "info"
 
 # ============================================
-# SECRETS (from AWS Secrets Manager or K8s Secrets)
+# SECRETS (from AWS Secrets Manager via ESO)
 # ============================================
 secrets:
-  # Kubernetes secrets (basic auth)
   create: true
   dbUser: "dbadmin"
   dbPassword: "changeme-strong-password"
@@ -185,7 +179,6 @@ secrets:
   dbPort: "5432"
   jwtSecretKey: "changeme-jwt-secret-key"
   
-  # External Secrets Operator (for AWS Secrets Manager)
   externalSecrets:
     enabled: true
     roleArn: "arn:aws:iam::958421185668:role/registration-app-eks-external-secrets-role"
@@ -215,14 +208,13 @@ securityContext:
       - ALL
 
 # ============================================
-# SERVICE ACCOUNT (for IRSA - IAM Roles for Service Accounts)
+# SERVICE ACCOUNT (IRSA)
 # ============================================
 serviceAccount:
   create: true
-  annotations: {}
-    # Uncomment and add your IRSA role ARN:
-    # eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/registration-app-sa-role"
   name: "registration-app-sa"
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::958421185668:role/registration-app-eks-external-secrets-role"
 
 # ============================================
 # ISTIO SERVICE MESH
@@ -231,7 +223,7 @@ istio:
   enabled: true
   mtls:
     enabled: true
-    mode: STRICT  # Require mTLS for all traffic
+    mode: STRICT
   virtualServices:
     enabled: true
   destinationRules:
@@ -251,9 +243,34 @@ resourceQuota:
     memory: "4Gi"
     cpu: "4"
 
+# ============================================
+# VELERO - Kubernetes Backup & Restore
+# ============================================
+velero:
+  enabled: true
+  serviceAccountRoleArn: "arn:aws:iam::958421185668:role/registration-app-eks-velero-role"
+  bucketName: "registration-app-eks-velero-backups-958421185668"
+  region: "us-east-1"
+  schedules:
+    daily-backup:
+      schedule: "0 2 * * *"
+      template:
+        ttl: "720h"
+        includedNamespaces:
+          - registration-app
+        storageLocation: default
+        volumeSnapshotLocations:
+          - default
 
-
-
-
-
-
+# ============================================
+# CLUSTER AUTOSCALER
+# ============================================
+clusterAutoscaler:
+  enabled: true
+  serviceAccountRoleArn: "arn:aws:iam::958421185668:role/registration-app-eks-cluster-autoscaler-role"
+  clusterName: "registration-app-eks"
+  awsRegion: "us-east-1"
+  minNodes: 1
+  maxNodes: 4
+  scaleDownDelayAfterAdd: "10m"
+  scaleDownUnneededTime: "10m"

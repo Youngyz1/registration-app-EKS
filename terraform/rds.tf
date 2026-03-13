@@ -9,7 +9,7 @@ resource "aws_db_subnet_group" "main" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.cluster_name}-rds-sg"
-  description = "RDS security group"
+  description = "RDS security group - allows only EKS nodes on 5432"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -17,6 +17,7 @@ resource "aws_security_group" "rds" {
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.eks_cluster.id]
+    description     = "PostgreSQL from EKS cluster SG"
   }
 
   egress {
@@ -32,10 +33,13 @@ resource "aws_security_group" "rds" {
 }
 
 resource "aws_db_instance" "main" {
-  identifier        = "${var.cluster_name}-db"
-  engine            = "postgres"
-  engine_version    = "16"
-  instance_class    = "db.t3.micro"
+  identifier     = "${var.cluster_name}-db"
+  engine         = "postgres"
+  engine_version = "16"
+
+  # Bumped from db.t3.micro - micro will bottleneck
+  # with DATABASE_POOL_SIZE=20 in the backend config
+  instance_class    = "db.t3.small"
   allocated_storage = 20
   storage_type      = "gp2"
 
@@ -46,11 +50,21 @@ resource "aws_db_instance" "main" {
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  skip_final_snapshot     = true
-  deletion_protection     = false
-  publicly_accessible     = false
-  multi_az                = false
-  backup_retention_period = 7
+  # High Availability
+  multi_az = true # Standby replica in second AZ
+
+  # Data Protection
+  deletion_protection       = true  # Must set to false before terraform destroy
+  skip_final_snapshot       = false # Creates a snapshot before deletion
+  final_snapshot_identifier = "${var.cluster_name}-db-final-snapshot"
+  backup_retention_period   = 7     # 7 days of automated backups
+  backup_window             = "03:00-04:00" # UTC - low traffic window
+
+  # Maintenance
+  maintenance_window         = "Mon:04:00-Mon:05:00"
+  auto_minor_version_upgrade = true
+
+  publicly_accessible = false
 
   tags = {
     Name = "${var.cluster_name}-db"
@@ -67,7 +81,3 @@ resource "aws_security_group_rule" "eks_to_rds" {
   security_group_id        = aws_security_group.rds.id
   description              = "Allow EKS nodes to connect to RDS PostgreSQL"
 }
-
-
-
-

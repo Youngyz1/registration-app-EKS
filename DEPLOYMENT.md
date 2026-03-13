@@ -1,7 +1,7 @@
 @"
 # Registration App EKS - Deployment Guide
 
-**Last Updated:** March 9, 2026
+**Last Updated:** March 13, 2026
 **Kubernetes:** 1.31 | **Istio:** service mesh | **ALB:** internet-facing HTTP
 
 ---
@@ -20,6 +20,10 @@ helm repo add eks https://aws.github.io/eks-charts
 helm repo add external-secrets https://charts.external-secrets.io
 helm repo add argo https://argoproj.github.io/argo-helm
 helm repo add sonarqube https://SonarSource.github.io/helm-chart-sonarqube
+helm repo add vmware-tanzu https://vmware-tanzu.github.io/helm-charts
+helm repo add autoscaler https://kubernetes.github.io/autoscaler
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
 ``````
 
@@ -48,12 +52,52 @@ a rebuild for the frontend to call the correct API endpoint.
 ## FULL DEPLOY (Fresh Infrastructure)
 
 ### Step 1 - Provision Infrastructure
+
+> **NEW: Remote state must be bootstrapped first (run once)**
+``````powershell
+cd terraform/bootstrap
+terraform init
+terraform apply
+cd ..
+terraform init -migrate-state
+# Type "yes" when prompted
+``````
+
+> **NEW: Set DB password as env var - never hardcode it**
+``````powershell
+$env:TF_VAR_db_password = (openssl rand -base64 32)
+# SAVE this password somewhere safe before continuing
+echo $env:TF_VAR_db_password
+``````
 ``````powershell
 cd terraform
 terraform init
 terraform apply -auto-approve
 cd ..
 ``````
+
+> **NEW: Save these outputs - needed for values.yaml**
+``````powershell
+terraform output velero_role_arn
+terraform output velero_bucket_name
+terraform output waf_arn
+terraform output cluster_autoscaler_role_arn
+terraform output external_secrets_role_arn
+
+# Get ACM certificate ID
+aws acm list-certificates --region us-east-1
+``````
+
+> **NEW: Fill in values.yaml placeholders with the outputs above**
+
+| Placeholder | Value |
+|---|---|
+| ``REPLACE_WITH_WAF_ARN`` | ``terraform output waf_arn`` |
+| ``REPLACE_WITH_EXTERNAL_SECRETS_ROLE_ARN`` | ``arn:aws:iam::958421185668:role/registration-app-eks-external-secrets-role`` |
+| ``REPLACE_WITH_VELERO_ROLE_ARN`` | ``terraform output velero_role_arn`` |
+| ``REPLACE_WITH_VELERO_BUCKET_NAME`` | ``terraform output velero_bucket_name`` |
+| ``REPLACE_WITH_CERT_ID`` | ACM cert ID from above |
+| ``REPLACE_WITH_CLUSTER_AUTOSCALER_ROLE_ARN`` | ``terraform output cluster_autoscaler_role_arn`` |
 
 ---
 
@@ -317,19 +361,22 @@ with the new ALB URL, then trigger a rebuild so the frontend uses the correct AP
 git commit --allow-empty -m "ci: trigger rebuild with updated REACT_APP_API_URL"
 git push
 ``````
+
+---
+
 ## MONITORING SETUP (Prometheus, Grafana, Loki)
 
 ### Step 1 - Add Helm Repos
-```powershell
+``````powershell
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
-```
+``````
 
 ---
 
 ### Step 2 - Install kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
-```powershell
+``````powershell
 helm install prometheus prometheus-community/kube-prometheus-stack `
   -n monitoring --create-namespace `
   --set grafana.adminPassword=admin123 `
@@ -340,12 +387,12 @@ helm install prometheus prometheus-community/kube-prometheus-stack `
 Start-Sleep -Seconds 120
 kubectl get pods -n monitoring
 # All pods should be Running
-```
+``````
 
 ---
 
 ### Step 3 - Install Loki Stack (Loki + Promtail)
-```powershell
+``````powershell
 helm install loki grafana/loki-stack `
   -n monitoring `
   --set loki.persistence.enabled=true `
@@ -359,12 +406,12 @@ Start-Sleep -Seconds 60
 kubectl get pods -n monitoring | Select-String "loki"
 # loki-0: Running 1/1
 # loki-promtail-*: Running 1/1 (one per node)
-```
+``````
 
 ---
 
 ### Step 4 - Expose Grafana via ALB
-```powershell
+``````powershell
 # Nodes are in private subnets - must use ALB ingress, NOT LoadBalancer type
 @"
 apiVersion: networking.k8s.io/v1
@@ -396,7 +443,7 @@ Start-Sleep -Seconds 60
 $GRAFANA_URL = "http://$(kubectl get ingress grafana-ingress -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
 echo "Grafana URL: $GRAFANA_URL"
 # Login: admin / admin123
-```
+``````
 
 ---
 
@@ -404,10 +451,10 @@ echo "Grafana URL: $GRAFANA_URL"
 1. Go to **Connections** -> **Data Sources** -> **Add data source**
 2. Select **Loki**
 3. Get the Loki cluster IP:
-```powershell
+``````powershell
 kubectl get svc loki -n monitoring -o jsonpath='{.spec.clusterIP}'
-```
-4. Set URL to: `http://<loki-cluster-ip>:3100`
+``````
+4. Set URL to: `http://loki:3100`
 5. Click **Save & Test**
 
 Note: Health check may show a parse error due to Grafana/Loki version mismatch.
@@ -428,13 +475,116 @@ Go to **Dashboards** -> **Import** and import:
 ---
 
 ### Step 7 - Verify Logs are Flowing
-```powershell
+``````powershell
 kubectl exec -n monitoring loki-0 -- wget -qO- "http://localhost:3100/loki/api/v1/labels"
 # Should return labels including: namespace, pod, container, app
 
 kubectl exec -n monitoring loki-0 -- wget -qO- "http://localhost:3100/loki/api/v1/query?query=%7Bnamespace%3D%22registration-app%22%7D&limit=5"
 # Should return log entries from backend pods
-```
+``````
+
+---
+
+## VELERO BACKUP SETUP (NEW)
+
+### Step 1 - Install Velero
+``````powershell
+# S3 bucket and IAM role were created by terraform - grab the outputs
+$VELERO_BUCKET = terraform -chdir=terraform output -raw velero_bucket_name
+$VELERO_ROLE   = terraform -chdir=terraform output -raw velero_role_arn
+
+helm install velero vmware-tanzu/velero `
+  --namespace velero `
+  --create-namespace `
+  --set configuration.provider=aws `
+  --set configuration.backupStorageLocation.bucket=$VELERO_BUCKET `
+  --set configuration.backupStorageLocation.config.region=us-east-1 `
+  --set configuration.volumeSnapshotLocation.config.region=us-east-1 `
+  --set "serviceAccount.server.annotations.eks\.amazonaws\.com/role-arn=$VELERO_ROLE" `
+  --set initContainers[0].name=velero-plugin-for-aws `
+  --set initContainers[0].image=velero/velero-plugin-for-aws:v1.9.0 `
+  --set initContainers[0].volumeMounts[0].mountPath=/target `
+  --set initContainers[0].volumeMounts[0].name=plugins
+
+kubectl get pods -n velero
+# velero pod should be Running 1/1
+``````
+
+---
+
+### Step 2 - Verify Velero with a Test Backup
+``````powershell
+velero backup create manual-test --include-namespaces registration-app
+velero backup describe manual-test --details
+# Should show Phase: Completed after ~1 minute
+``````
+
+---
+
+## CLUSTER AUTOSCALER SETUP (NEW)
+
+### Step 1 - Install Cluster Autoscaler
+``````powershell
+$CA_ROLE = terraform -chdir=terraform output -raw cluster_autoscaler_role_arn
+
+helm install cluster-autoscaler autoscaler/cluster-autoscaler `
+  --namespace kube-system `
+  --set autoDiscovery.clusterName=registration-app-eks `
+  --set awsRegion=us-east-1 `
+  --set "rbac.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$CA_ROLE" `
+  --set extraArgs.balance-similar-node-groups=true `
+  --set extraArgs.skip-nodes-with-system-pods=false
+``````
+
+---
+
+### Step 2 - Verify Cluster Autoscaler Discovered the Node Group
+``````powershell
+kubectl logs -n kube-system -l app.kubernetes.io/name=cluster-autoscaler | grep "registration-app"
+# Should show your ASG being found and monitored
+``````
+
+---
+
+## SECURITY HARDENING (NEW)
+
+### Step 1 - Lock Down Monitoring Security Group Ports
+Grafana, Prometheus, SonarQube, and Alertmanager are currently open to 0.0.0.0/0.
+Change all 4 monitoring rules in ``terraform/networking.tf``:
+``````hcl
+# Before
+cidr_blocks = ["0.0.0.0/0"]
+
+# After - get your IP first: curl ifconfig.me
+cidr_blocks = ["YOUR_IP/32"]
+``````
+Then apply:
+``````powershell
+terraform apply
+``````
+
+---
+
+### Step 2 - Verify WAF is Attached to ALB
+``````powershell
+aws wafv2 list-web-acls --scope REGIONAL --region us-east-1
+# Should show: registration-app-eks-waf
+
+aws wafv2 list-resources-for-web-acl `
+  --web-acl-arn $(terraform -chdir=terraform output -raw waf_arn) `
+  --region us-east-1
+# Should show your ALB ARN
+``````
+
+---
+
+### Step 3 - Verify RDS Multi-AZ
+``````powershell
+aws rds describe-db-instances `
+  --db-instance-identifier registration-app-eks-db `
+  --query 'DBInstances[0].MultiAZ'
+# Should return: true
+``````
 
 ---
 
@@ -445,14 +595,14 @@ Known version compatibility issue between Grafana 11.x and Loki 2.x.
 Data source still works for queries despite the error.
 
 ### Loki PVC not binding
-```powershell
+``````powershell
 kubectl get pvc -n monitoring
 # If stuck in Pending, check EBS CSI driver is running:
 kubectl get pods -n kube-system | Select-String "ebs-csi"
-```
+``````
 
 ### No logs in Grafana Explore
-```powershell
+``````powershell
 # Verify Promtail is running on all nodes
 kubectl get pods -n monitoring | Select-String "promtail"
 # Should show one pod per node (3 pods for 3 nodes)
@@ -460,19 +610,17 @@ kubectl get pods -n monitoring | Select-String "promtail"
 # Verify Loki is receiving logs
 kubectl exec -n monitoring loki-0 -- wget -qO- http://localhost:3100/ready
 # Should return: ready
-```
+``````
 
 ### Grafana LoadBalancer not accessible
 Nodes are in private subnets - LoadBalancer type will not work.
 Always use ALB ingress. Re-apply grafana-ingress.yaml:
-```powershell
+``````powershell
 kubectl apply -f grafana-ingress.yaml
 kubectl get ingress -n monitoring
-```
+``````
 
-### DESTROY - delete monitoring ingress before terraform destroy
-```powershell
-kubectl delete ingress grafana-ingress -n monitoring
+---
 
 ## DESTROY
 ``````powershell
@@ -480,6 +628,7 @@ kubectl delete ingress grafana-ingress -n monitoring
 kubectl delete ingress --all -n registration-app
 kubectl delete ingress --all -n argocd
 kubectl delete ingress --all -n sonarqube
+kubectl delete ingress grafana-ingress -n monitoring
 Start-Sleep -Seconds 90
 
 # Step 2 - Delete leftover ALB security groups
@@ -613,21 +762,29 @@ terraform apply
 - ArgoCD server.insecure set via argocd-cmd-params-cm (not args patch): argocd-ingress.yaml
 - SonarQube exposed via ALB ingress: sonarqube-ingress.yaml
 - ArgoCD GitOps application pointing to helm/registration-app on main: argocd/registration-app.yaml
+- Velero S3 bucket + IRSA role: terraform/velero.tf
+- WAF WebACL with 5 rules attached to ALB: terraform/waf.tf
+- Cluster Autoscaler IRSA role + ASG tags: terraform/cluster-autoscaler.tf
+- RDS upgraded to Multi-AZ with deletion protection: terraform/rds.tf
+- Terraform remote state on S3 + DynamoDB locking: terraform/bootstrap/
 
 ---
 
 ## ARCHITECTURE
 
-Internet -> ALB (HTTP:80)
+Internet -> ALB (HTTP:80)  <-- WAF v2 (SQLi, XSS, rate limit 500/5min)
   /api/*  -> backend-service:8000  (3 pods, FastAPI + Istio sidecar)
   /*      -> frontend-service:80   (3 pods, React/Nginx + Istio sidecar)
-                -> RDS PostgreSQL (registration-app-eks-db.cmd6quusggmv.us-east-1.rds.amazonaws.com)
+                -> RDS PostgreSQL Multi-AZ (registration-app-eks-db.cmd6quusggmv.us-east-1.rds.amazonaws.com)
 
 Two Ingress resources share one ALB via group.name: registration-app
 Each ingress has its own healthcheck-path (/api/health and /)
 
 SonarQube -> separate ALB -> sonarqube pod (port 9000) -> embedded DB (eval only)
 ArgoCD    -> separate ALB -> argocd-server pod (port 80, insecure mode)
+
+Velero    -> S3 bucket (cluster backups, namespace snapshots)
+CA        -> ASG (auto scales nodes when pods are pending)
 
 ---
 
